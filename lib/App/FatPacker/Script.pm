@@ -1,18 +1,21 @@
 package App::FatPacker::Script;
-
+# ABSTRACT: FatPacker for scripts
 use strict;
 use warnings;
-use 5.010;
+use 5.010001;
 
 use Config;
 use version;
+use List::Util qw/uniq/;
 
 use Getopt::Long qw/GetOptions/;
 use Pod::Usage qw/pod2usage/;
 
+use Cwd qw/cwd/;
 use File::Find qw/find/;
-use File::Spec::Functions qw/catdir/;
-use Perl::Strip;
+use File::Path qw/make_path/;
+use File::Spec::Functions qw/catdir rel2abs/;
+# use Perl::Strip;
 use Module::CoreList;
 use App::FatPacker;
 
@@ -29,6 +32,7 @@ sub parse_options {
 
     # Default values
     my @dirs = ("lib", "fatlib", "local", "extlib");
+    my (@additional_core, @non_core) = (() , ());
     my $target_version = $];
 
     # Check, if passed version exists or not
@@ -41,7 +45,8 @@ sub parse_options {
 
     GetOptions
         "d|dir=s@"      => \@dirs,
-        "i|includes=s@" => \(my $additional_modules = []),
+        "i|includes=s@" => \@additional_core,
+        "n|non-core=s@" => \@non_core,
         "h|help"        => sub { pod2usage(1) },
         "o|output=s"    => \(my $output),
         "q|quiet"       => \(my $quiet),
@@ -55,8 +60,10 @@ sub parse_options {
     or pod2usage(2);
 
     $self->{script}     = shift @ARGV or do { warn "Missing scirpt.\n"; pod2usage(2) };
-    push @{$self->{dir}}, split( /,/, join(',', @dirs) );
-    $self->{forced_CORE} = $additional_modules;
+    push @{$self->{dir}}, map { $_ = File::Spec->rel2abs($_) }
+                          split( /,/, join(',', @dirs) );
+    push @{$self->{forced_CORE}}, split( /,/, join(',', @additional_core) );
+    push @{$self->{non_CORE}}, split( /,/, join(',', @non_core) );
     $self->{output}     = $output;
     $self->{quiet}      = $quiet;
     $self->{strict}     = $strict;
@@ -78,7 +85,9 @@ sub trace_noncore_dependencies {
     my $trace_opts = '>&STDOUT';
 
     local $ENV{PERL5OPT} = join ' ',
-    ( $ENV{PERL5OPT} || () ), '-MApp::FatPacker::Trace=' . $trace_opts;
+        ( $ENV{PERL5OPT} || () ), '-MApp::FatPacker::Trace=' . $trace_opts;
+    local $ENV{PERL5LIB} = join ':',
+        @{$self->{dir}}, ( $ENV{PERL5LIB} || () );
 
     my %replace = (
         '/'   => '::',
@@ -92,7 +101,66 @@ sub trace_noncore_dependencies {
         map { s!(/|.pm|\n)!$replace{$1} // ''!egr } qx/$^X @opts/;   ## no critic
 }
 
-sub add_core_dependenceies {
+sub filter_non_proj_modules {
+    my ($self, @modules) = @_;
+
+    my $pid = open(my $pipe, "-|");
+    defined($pid) or die "Can't fork for filtering project modules: $!\n";
+
+    if ($pid) {
+        my @child_output = (<$pipe>);
+        chomp @child_output;
+        return @child_output;
+    } else {
+        local @INC = (@{$self->{dir}}, @INC);
+        for my $non_core (@modules) {
+            eval {
+                require $non_core; 
+                1;
+            } or do {
+                warn "Cannot load $non_core module: $@\n";
+            };
+            if ( not grep {
+                    $INC{$non_core} =~ m!$_/$non_core!
+                } @{$self->{dir}} )
+            {
+                say $non_core;
+            }
+        }
+        exit 0;
+    }
+}
+
+sub filter_xs_modules {
+    my ($self, @modules) = @_;
+
+    my $pid = open(my $pipe_dyna, "-|");
+    defined($pid) or die "Can't fork for filtering XS modules: $!\n";
+
+    if ($pid) {
+        my @child_output = (<$pipe_dyna>);
+        chomp @child_output;
+        return @child_output;
+    } else {
+        use DynaLoader;
+        local @INC = (@{$self->{dir}}, @INC);
+        for my $module_file (@modules) {
+            my $module_name = $module_file =~ s!/!::!gr =~ s!.pm$!!r;
+            eval { 
+                require $module_file; 
+                1; 
+            } or do {
+                warn "Failed to load ${module_file}: $@\n";
+            };
+            if ( grep { $module_name eq $_ } @DynaLoader::dl_modules ) {
+                say $module_file;
+            }
+        }
+        exit 0;
+    }
+}
+
+sub add_noncore_dependenceies {
     my ($self, @noncore) = @_;
     push @noncore, @{$self->{forced_CORE}};
     return (sort { $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger } @noncore);
@@ -100,36 +168,48 @@ sub add_core_dependenceies {
 
 sub packlist {
     my ($self, @deps) = @_;
-    foreach my $pl ($self->packlists_containing(@deps)) {
-        print "${pl}\n";
-    }
+    say for ($self->packlists_containing(@deps));
 }
 
 sub packlists_containing {
-    my ($self, @targets) = @_;
-    my @targetss;
-    {
-        local @INC = ('lib', @INC);
-        foreach my $t (@targets) {
-            unless (eval { require $t; 1}) {
-                warn "Failed to load ${t}: $@\n"
-                ."Make sure you're not missing a packlist as a result\n";
+    my ($self, @module_files) = @_;
+    my @packlists;
+
+    my $pid = open(my $pipe_packa, "-|");
+    defined($pid) or die "Can't fork for loading modules: $!\n";
+
+    if ($pid) {
+        @packlists = (<$pipe_packa>);
+        chomp @packlists;
+        return @packlists;
+    } else {
+        local @INC = (@{$self->{dir}}, @INC);
+        my @loadable = ();
+        for my $module (@module_files) {
+            eval {
+                require $module; 
+                1;
+            } or do {
+                warn "Failed to load ${module}: $@"
+                    . "Make sure you're not missing a packlist as a result!\n";
                 next;
-            }
-            push @targetss, $t;
+            };
+            push @loadable, $module;
         }
+        my @pack_dirs = uniq(grep -d $_, map catdir($_, 'auto'), @INC);
+        my %pack_rev;
+        find({
+            no_chdir => 1,
+            wanted => sub {
+                return unless m![\\/]\.packlist$! && -f $_;
+                $pack_rev{$_} = $File::Find::name for $self->lines_of($File::Find::name);
+            },
+        }, @pack_dirs);
+        my %found;
+        @found{map { $pack_rev{Cwd::abs_path($INC{$_})} || "" } @loadable} = ();
+        say for sort keys %found;
+        exit 0;
     }
-    my @search = grep -d $_, map catdir($_, 'auto'), @INC;
-    my %pack_rev;
-    find({
-        no_chdir => 1,
-        wanted => sub {
-            return unless /[\\\/]\.packlist$/ && -f $_;
-            $pack_rev{$_} = $File::Find::name for $self->lines_of($File::Find::name);
-        },
-    }, @search);
-    my %found; @found{map +($pack_rev{Cwd::abs_path($INC{$_})}||()), @targetss} = ();
-    sort keys %found;
 }
 
 sub lines_of {
@@ -138,10 +218,27 @@ sub lines_of {
 
 sub run {
     my ($self) = @_;
-    my @deps = $self->add_core_dependenceies($self->trace_noncore_dependencies(to_packlist => 1));
-    $self->packlist(@deps);
-    say $?;
-    use Data::Printer; p @deps;
+    my @non_core_deps = (
+        $self->trace_noncore_dependencies(to_packlist => 1), 
+        @{$self->{non_CORE}}
+    );
+    my @non_proj_deps = $self->filter_non_proj_modules(@non_core_deps);
+    my @xsed_deps = $self->filter_xs_modules(@non_proj_deps);
+    say "--- non-core-deps";
+    say for (@non_core_deps);
+    say "--- non-proj-deps";
+    say for (@non_proj_deps);
+    say "--- xsed-deps";
+    say for (@xsed_deps);
+    say "---";
+    # $self->add_noncore_dependenceies
+    my @packlists = $self->packlist(@non_proj_deps);
+    say for (@packlists);
+    my $ftpckr = App::FatPacker->new();
+    make_path('fatlib');
+    my $base = catdir(cwd, 'fatlib');
+    $ftpckr->packlists_to_tree($base, \@packlists);
+    say for (@packlists);
 }
 
 sub build_dir {
