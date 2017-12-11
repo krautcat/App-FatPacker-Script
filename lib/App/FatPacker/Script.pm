@@ -13,8 +13,13 @@ use Pod::Usage qw/pod2usage/;
 
 use Cwd qw/cwd/;
 use File::Find qw/find/;
-use File::Path qw/make_path/;
-use File::Spec::Functions qw/catdir rel2abs/;
+use File::Copy qw/copy/;
+use File::Path qw/make_path remove_tree/;
+use File::Spec::Functions qw/
+    catdir catpath
+    splitdir splitpath
+    rel2abs abs2rel
+    /;
 # use Perl::Strip;
 use Module::CoreList;
 use App::FatPacker;
@@ -60,7 +65,7 @@ sub parse_options {
     or pod2usage(2);
 
     $self->{script}     = shift @ARGV or do { warn "Missing scirpt.\n"; pod2usage(2) };
-    push @{$self->{dir}}, map { $_ = File::Spec->rel2abs($_) }
+    push @{$self->{dir}}, map { $_ = rel2abs $_ }
                           split( /,/, join(',', @dirs) );
     push @{$self->{forced_CORE}}, split( /,/, join(',', @additional_core) );
     push @{$self->{non_CORE}}, split( /,/, join(',', @non_core) );
@@ -196,13 +201,16 @@ sub packlists_containing {
             };
             push @loadable, $module;
         }
-        my @pack_dirs = uniq(grep -d $_, map catdir($_, 'auto'), @INC);
+        my @pack_dirs = uniq(
+            grep { -d $_ }
+            map { catdir($_, 'auto') } @INC
+        );
         my %pack_rev;
         find({
             no_chdir => 1,
             wanted => sub {
                 return unless m![\\/]\.packlist$! && -f $_;
-                $pack_rev{$_} = $File::Find::name for $self->lines_of($File::Find::name);
+                $pack_rev{$_} = $File::Find::name for lines_of($File::Find::name);
             },
         }, @pack_dirs);
         my %found;
@@ -212,8 +220,41 @@ sub packlists_containing {
     }
 }
 
+sub packlist_to_tree {
+    my ($self, $where, $packlists) = @_;
+    remove_tree $where;
+    make_path $where;
+
+    for my $plist (@$packlists) {
+        my ($volume, $dir_path, $file) = splitpath $plist;
+        my @dirs_path = splitdir $dir_path;
+        my $pack_base;
+
+        for my $n (0 .. $#dirs_path) {
+            if ($dirs_path[$n] eq 'auto') {
+                my $version_lib = 0+!!( $dirs_path[$n - 1] =~ /^[0-9.]+$/ );
+                $pack_base = catpath(
+                    $volume, 
+                    catdir @dirs_path[0 .. $p - (2 + $version_lib)]
+                );
+                last;
+            }
+        }
+     
+        die "Couldn't fin base path of packlist ${plist}\n" unless $pack_base;
+
+        for my $source ( lines_of($plist) ) {
+            next unless substr($source, 0, length $pack_base) eq $pack_base;
+            my $target = rel2abs(abs2rel($source, $pack_base), $where);
+            my $target_dir = catpath( (splitpath $target)[0,1] );
+            make_path $target_dir;
+            copy $source => $target;
+        }
+    }
+}
+
 sub lines_of {
-    map +(chomp,$_)[1], do { local @ARGV = ($_[1]); <> };
+    map +(chomp,$_)[1], do { local @ARGV = ($_[0]); <> };
 }
 
 sub run {
