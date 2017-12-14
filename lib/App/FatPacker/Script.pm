@@ -59,6 +59,7 @@ sub parse_options {
         "v|version"     => sub { printf "%s %s\n", __PACKAGE__, __PACKAGE__->VERSION; exit },
         "t|target=s"    => $version_handler,
         "color!"        => \(my $color = 1),
+        "fatlib-dir=s"  => \(my $fatlib_dir = "fatlib"),
         "shebang=s"     => \(my $custom_shebang),
         "exclude-strip=s@" => \(my $exclude_strip),
         "no-strip|no-perl-strip" => \(my $no_perl_strip),
@@ -78,6 +79,7 @@ sub parse_options {
     $self->{custom_shebang} = $custom_shebang;
     $self->{exclude_strip}  = [map { qr/$_/ } @{$exclude_strip || []}];
     $self->{exclude}    = [];
+    $self->{fatlib_dir} = rel2abs $fatlib_dir;
 
     return $self;
 }
@@ -107,7 +109,7 @@ sub trace_noncore_dependencies {
 }
 
 sub filter_non_proj_modules {
-    my ($self, @modules) = @_;
+    my ($self, $modules) = @_;
 
     my $pid = open(my $pipe, "-|");
     defined($pid) or die "Can't fork for filtering project modules: $!\n";
@@ -118,7 +120,7 @@ sub filter_non_proj_modules {
         return @child_output;
     } else {
         local @INC = (@{$self->{dir}}, @INC);
-        for my $non_core (@modules) {
+        for my $non_core (@$modules) {
             eval {
                 require $non_core; 
                 1;
@@ -137,7 +139,7 @@ sub filter_non_proj_modules {
 }
 
 sub filter_xs_modules {
-    my ($self, @modules) = @_;
+    my ($self, $modules) = @_;
 
     my $pid = open(my $pipe_dyna, "-|");
     defined($pid) or die "Can't fork for filtering XS modules: $!\n";
@@ -149,7 +151,7 @@ sub filter_xs_modules {
     } else {
         use DynaLoader;
         local @INC = (@{$self->{dir}}, @INC);
-        for my $module_file (@modules) {
+        for my $module_file (@$modules) {
             my $module_name = $module_file =~ s!/!::!gr =~ s!.pm$!!r;
             eval { 
                 require $module_file; 
@@ -165,19 +167,27 @@ sub filter_xs_modules {
     }
 }
 
-sub add_noncore_dependenceies {
-    my ($self, @noncore) = @_;
-    push @noncore, @{$self->{forced_CORE}};
-    return (sort { $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger } @noncore);
+sub add_forced_core_dependenceies {
+    my ($self, $noncore) = @_;
+    push @$noncore, @{$self->{forced_CORE}};
+    if (wantarray) {
+        return (sort {
+                $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger
+            } @$noncore);
+    } elsif (defined wantarray) {
+        return $noncore;
+    } else {
+        return;
+    }
 }
 
 sub packlist {
-    my ($self, @deps) = @_;
-    say for ($self->packlists_containing(@deps));
+    my ($self, $deps) = @_;
+    return ($self->packlists_containing($deps));
 }
 
 sub packlists_containing {
-    my ($self, @module_files) = @_;
+    my ($self, $module_files) = @_;
     my @packlists;
 
     my $pid = open(my $pipe_packa, "-|");
@@ -190,7 +200,7 @@ sub packlists_containing {
     } else {
         local @INC = (@{$self->{dir}}, @INC);
         my @loadable = ();
-        for my $module (@module_files) {
+        for my $module (@$module_files) {
             eval {
                 require $module; 
                 1;
@@ -220,7 +230,7 @@ sub packlists_containing {
     }
 }
 
-sub packlist_to_tree {
+sub packlists_to_tree {
     my ($self, $where, $packlists) = @_;
     remove_tree $where;
     make_path $where;
@@ -235,13 +245,13 @@ sub packlist_to_tree {
                 my $version_lib = 0+!!( $dirs_path[$n - 1] =~ /^[0-9.]+$/ );
                 $pack_base = catpath(
                     $volume, 
-                    catdir @dirs_path[0 .. $p - (2 + $version_lib)]
+                    catdir @dirs_path[0 .. $n - (2 + $version_lib)]
                 );
                 last;
             }
         }
-     
-        die "Couldn't fin base path of packlist ${plist}\n" unless $pack_base;
+
+        die "Couldn't find base path of packlist ${plist}\n" unless $pack_base;
 
         for my $source ( lines_of($plist) ) {
             next unless substr($source, 0, length $pack_base) eq $pack_base;
@@ -263,23 +273,25 @@ sub run {
         $self->trace_noncore_dependencies(to_packlist => 1), 
         @{$self->{non_CORE}}
     );
-    my @non_proj_deps = $self->filter_non_proj_modules(@non_core_deps);
-    my @xsed_deps = $self->filter_xs_modules(@non_proj_deps);
+    $self->add_forced_core_dependenceies(\@non_core_deps);
+    my @non_proj_deps = $self->filter_non_proj_modules(\@non_core_deps);
+    my @xsed_deps = $self->filter_xs_modules(\@non_proj_deps);
     say "--- non-core-deps";
     say for (@non_core_deps);
     say "--- non-proj-deps";
     say for (@non_proj_deps);
     say "--- xsed-deps";
     say for (@xsed_deps);
-    say "---";
+
     # $self->add_noncore_dependenceies
-    my @packlists = $self->packlist(@non_proj_deps);
+    my @packlists = $self->packlist(\@non_proj_deps);
+    say "--- packlists";
     say for (@packlists);
-    my $ftpckr = App::FatPacker->new();
+
     make_path('fatlib');
-    my $base = catdir(cwd, 'fatlib');
-    $ftpckr->packlists_to_tree($base, \@packlists);
-    say for (@packlists);
+    say $self->{fatlib_dir};
+    my $base = $self->{fatlib_dir};
+    $self->packlists_to_tree($base, \@packlists);
 }
 
 sub build_dir {
