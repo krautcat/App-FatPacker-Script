@@ -37,6 +37,7 @@ sub parse_options {
 
     # Default values
     my @dirs = ("lib", "fatlib", "local", "extlib");
+    my @proj_dirs = ();
     my (@additional_core, @non_core) = (() , ());
     my $target_version = $];
 
@@ -50,6 +51,10 @@ sub parse_options {
 
     GetOptions
         "d|dir=s@"      => \@dirs,
+        "b|base=s"      => \(my $base = cwd),
+        "f|fatlib-dir=s"
+                        => \(my $fatlib_dir = "fatlib"),
+        "p|proj-dir=s@" => \@proj_dirs,
         "i|includes=s@" => \@additional_core,
         "n|non-core=s@" => \@non_core,
         "h|help"        => sub { pod2usage(1) },
@@ -59,17 +64,22 @@ sub parse_options {
         "v|version"     => sub { printf "%s %s\n", __PACKAGE__, __PACKAGE__->VERSION; exit },
         "t|target=s"    => $version_handler,
         "color!"        => \(my $color = 1),
-        "fatlib-dir=s"  => \(my $fatlib_dir = "fatlib"),
+        "use-cache!"    => \(my $cache = 1),
         "shebang=s"     => \(my $custom_shebang),
         "exclude-strip=s@" => \(my $exclude_strip),
         "no-strip|no-perl-strip" => \(my $no_perl_strip),
-    or pod2usage(2);
+        or pod2usage(2);
 
     $self->{script}     = shift @ARGV or do { warn "Missing scirpt.\n"; pod2usage(2) };
-    push @{$self->{dir}}, map { $_ = rel2abs $_ }
+    push @{$self->{dir}}, map { $_ = rel2abs $_, $base }
                           split( /,/, join(',', @dirs) );
     push @{$self->{forced_CORE}}, split( /,/, join(',', @additional_core) );
     push @{$self->{non_CORE}}, split( /,/, join(',', @non_core) );
+    push @{$self->{proj_dir}},
+        scalar @proj_dirs
+        ? ( map { rel2abs $_, $base } @proj_dirs )
+        : ( rel2abs "lib", $base );
+    $self->{fatlib_dir} = rel2abs $fatlib_dir, $base;
     $self->{output}     = $output;
     $self->{quiet}      = $quiet;
     $self->{strict}     = $strict;
@@ -77,9 +87,21 @@ sub parse_options {
     $self->{target}     = $target_version;
     $self->{perl_strip} = $no_perl_strip ? undef : Perl::Strip->new;
     $self->{custom_shebang} = $custom_shebang;
-    $self->{exclude_strip}  = [map { qr/$_/ } @{$exclude_strip || []}];
+    $self->{exclude_strip}  = [ map { qr/$_/ } @{$exclude_strip || []} ];
     $self->{exclude}    = [];
-    $self->{fatlib_dir} = rel2abs $fatlib_dir;
+    $self->{use_cache}  = $cache;
+
+    if (in_ary($self->{fatlib_dir}, $self->{dir}) and !$self->{use_cache}) {
+        $self->{dir} = [ grep { $_ ne $self->{fatlib_dir} } @{$self->{dir}} ];
+    }
+
+    # Concatenate project directories at the beginning of array of directories
+    # to look up modules and then remove duplicates.
+    unshift @{$self->{dir}}, @{$self->{proj_dir}};
+    @{$self->{dir}} = uniq @{$self->{dir}};
+
+    say for @{$self->{dir}};
+    say $self->{fatlib_dir};
 
     return $self;
 }
@@ -198,7 +220,7 @@ sub packlists_containing {
         chomp @packlists;
         return @packlists;
     } else {
-        local @INC = (@{$self->{dir}}, @INC);
+        local @INC = (exclude_ary($self->{dir}, $self->{proj_dir}) , @INC);
         my @loadable = ();
         for my $module (@$module_files) {
             eval {
@@ -232,8 +254,10 @@ sub packlists_containing {
 
 sub packlists_to_tree {
     my ($self, $where, $packlists) = @_;
-    remove_tree $where;
-    make_path $where;
+    if (not $self->{use_cache}) {
+        remove_tree $where;
+        make_path $where;
+    } 
 
     for my $plist (@$packlists) {
         my ($volume, $dir_path, $file) = splitpath $plist;
@@ -263,8 +287,36 @@ sub packlists_to_tree {
     }
 }
 
+sub fatpack_file {
+    my ($self, $filename) = @_;
+    my $shebang;
+    my $script_code;
+
+    if (defined $filename and -r $filename) {
+        ($shebang, $script_code) = $self->load_main_script($filename);
+    }
+
+    my @dirs = $self->fatpack_collect_dirs();
+}
+
+sub fatpack_collect_dirs {
+    my ($self) = @_;
+    return grep -d, map { rel2abs $_, cwd } ($self->{fatlib_dir}, $self->{proj_dir});
+}
+
 sub lines_of {
     map +(chomp,$_)[1], do { local @ARGV = ($_[0]); <> };
+}
+
+sub in_ary {
+    my ($el, $array) = @_;
+    return (grep { $_ eq $el } @$array) ? 1 : 0;
+}
+
+sub exclude_ary {
+    my ($main, $exclude) = @_;
+    my %exclude_hash = map { $_ => 1 } @$exclude;
+    return (grep { not $exclude_hash{$_} } @$main);
 }
 
 sub run {
@@ -276,6 +328,7 @@ sub run {
     $self->add_forced_core_dependenceies(\@non_core_deps);
     my @non_proj_deps = $self->filter_non_proj_modules(\@non_core_deps);
     my @xsed_deps = $self->filter_xs_modules(\@non_proj_deps);
+    
     say "--- non-core-deps";
     say for (@non_core_deps);
     say "--- non-proj-deps";
@@ -285,11 +338,15 @@ sub run {
 
     # $self->add_noncore_dependenceies
     my @packlists = $self->packlist(\@non_proj_deps);
+    
     say "--- packlists";
     say for (@packlists);
 
-    make_path('fatlib');
+    make_path $self->{fatlib_dir};
+    
+    say " -- Fatlib directory -- ";
     say $self->{fatlib_dir};
+    
     my $base = $self->{fatlib_dir};
     $self->packlists_to_tree($base, \@packlists);
 }
