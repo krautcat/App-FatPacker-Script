@@ -4,12 +4,18 @@ use strict;
 use warnings;
 use 5.010001;
 
+use Data::Printer;
+
 use Config;
 use version;
 use List::Util qw/uniq/;
 
+use Storable qw/fd_retrieve store_fd/;
+use IO::Pipe;
+
 use Getopt::Long qw/GetOptions/;
 use Pod::Usage qw/pod2usage/;
+use Term::ANSIColor;
 
 use Cwd qw/cwd/;
 use File::Find qw/find/;
@@ -19,6 +25,7 @@ use File::Spec::Functions qw/
     catdir catpath
     splitdir splitpath
     rel2abs abs2rel
+    file_name_is_absolute
     /;
 # use Perl::Strip;
 use Module::CoreList;
@@ -205,21 +212,27 @@ sub add_forced_core_dependenceies {
 
 sub packlist {
     my ($self, $deps) = @_;
-    return ($self->packlists_containing($deps));
+    my %h = $self->packlists_containing($deps);
+    say STDERR colored ">>>>> non-XS orphans", 'bold yellow';
+    say for grep { my $m = $_; not grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
+    say STDERR colored ">>>> XS orphans", 'bold red';
+    say for grep { my $m = $_; grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
+    return ( keys %{$h{loadable}} );
 }
 
 sub packlists_containing {
     my ($self, $module_files) = @_;
     my @packlists;
 
-    my $pid = open(my $pipe_packa, "-|");
+    my $pipe = IO::Pipe->new();
+    my $pid = fork;
     defined($pid) or die "Can't fork for loading modules: $!\n";
 
     if ($pid) {
-        @packlists = (<$pipe_packa>);
-        chomp @packlists;
-        return @packlists;
+        $pipe->reader();
+        return %{ fd_retrieve($pipe) };
     } else {
+        # Exclude paths controlled by our project
         local @INC = (exclude_ary($self->{dir}, $self->{proj_dir}) , @INC);
         my @loadable = ();
         for my $module (@$module_files) {
@@ -237,23 +250,44 @@ sub packlists_containing {
             grep { -d $_ }
             map { catdir($_, 'auto') } @INC
         );
-        my %pack_rev;
+        # Keys of that hash are all paths listed in packlists while values
+        # are paths to packlist file containing key as line.
+        my %pack_reverse_internals;
         find({
             no_chdir => 1,
             wanted => sub {
                 return unless m![\\/]\.packlist$! && -f $_;
-                $pack_rev{$_} = $File::Find::name for lines_of($File::Find::name);
+                $pack_reverse_internals{$_} = $File::Find::name for lines_of($File::Find::name);
             },
         }, @pack_dirs);
+        # Keys of that hash are files listed in packlists responsible for our
+        # dependencies. So if packlist file contains loadable module, every file
+        # in that packlist will be the key of %found hash. Value is module file
+        # with OS-specific file notation (delimiters and '.pm' extension).
         my %found;
-        @found{map { $pack_rev{Cwd::abs_path($INC{$_})} || "" } @loadable} = ();
-        say for sort keys %found;
+        @found{map { $pack_reverse_internals{Cwd::abs_path($INC{$_})} || "" } @loadable} = @loadable;
+        delete $found{""};
+        say STDERR colored ">>>>> loadable", 'bold green';
+        say STDERR for @loadable;
+        say STDERR colored ">>>>> orphans loadable", 'bold yellow';
+        say STDERR for grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable;
+        say STDERR colored ">>>>> packlists", 'bold magenta';
+        say STDERR for keys %found;
+        p %found;
+        say STDERR colored ">>>>> modules with packlists", 'bold cyan';
+        say STDERR colored module_notation_conv($_), 'bold on_yellow' for values %found;
+        $pipe->writer();
+        $pipe->autoflush(1);
+        store_fd({
+                loadable => \%found,
+                orphaned => [ grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable ],
+            }, $pipe);
         exit 0;
     }
 }
 
 sub packlists_to_tree {
-    my ($self, $where, $packlists) = @_;
+    my ($self, $where, $packlists, $modules) = @_;
     if (not $self->{use_cache}) {
         remove_tree $where;
         make_path $where;
@@ -266,6 +300,9 @@ sub packlists_to_tree {
 
         for my $n (0 .. $#dirs_path) {
             if ($dirs_path[$n] eq 'auto') {
+                # $p-2 normally since it's <wanted path>/$Config{archname}/auto but
+                # if the last bit is a number it's $Config{archname}/$version/auto
+                # so use $p-3 in that case
                 my $version_lib = 0+!!( $dirs_path[$n - 1] =~ /^[0-9.]+$/ );
                 $pack_base = catpath(
                     $volume, 
@@ -308,6 +345,41 @@ sub lines_of {
     map +(chomp,$_)[1], do { local @ARGV = ($_[0]); <> };
 }
 
+sub module_notation_conv {
+    # Conversion of double-coloned module notation (with :: as separator) to
+    # platform-dependent file representation.
+    # Direction:
+    #   1 - filename >> dotted
+    #   0 - dotted >> filename
+    # Note: subroutine currently supports only Unix-like systems
+    my ($namestring, %args) = @_;
+    say $namestring;
+    my $direction = 1;
+    if (exists $args{direction}) {
+        if ($args{direction} eq 'to_dotted' or
+            $args{direction} eq 'to_fname'      )
+        {
+            $direction = $args{direction} eq 'to_dotted' ? 1 : 0;
+        } else {
+            return;
+        }
+    }
+    my $base = (exists $args{base} and not $args{base} eq "") 
+        ? $args{base} 
+        : $INC[0];
+
+    if ($direction) {
+        my $mod_path = $namestring;
+        if (index $namestring, '/') {
+            $mod_path = abs2rel $namestring, $base;
+        }
+        my @mod_path_parts = splitdir $mod_path;
+        $mod_path_parts[-1] =~ s/(.*)\.pm$/$1/;
+        return join '::', @mod_path_parts;
+    } else {
+    }
+}
+
 sub in_ary {
     my ($el, $array) = @_;
     return (grep { $_ eq $el } @$array) ? 1 : 0;
@@ -327,14 +399,14 @@ sub run {
     );
     $self->add_forced_core_dependenceies(\@non_core_deps);
     my @non_proj_deps = $self->filter_non_proj_modules(\@non_core_deps);
-    my @xsed_deps = $self->filter_xs_modules(\@non_proj_deps);
+    @{$self->{xsed_deps}} = $self->filter_xs_modules(\@non_proj_deps);
     
     say "--- non-core-deps";
     say for (@non_core_deps);
     say "--- non-proj-deps";
     say for (@non_proj_deps);
     say "--- xsed-deps";
-    say for (@xsed_deps);
+    say for (@{$self->{xsed_deps}});
 
     # $self->add_noncore_dependenceies
     my @packlists = $self->packlist(\@non_proj_deps);
