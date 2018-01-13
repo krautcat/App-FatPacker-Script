@@ -42,6 +42,8 @@ sub parse_options {
     my $self = shift;
     local @ARGV = @_;
 
+    Getopt::Long::Configure("bundling");
+
     # Default values
     my @dirs = ("lib", "fatlib", "local", "extlib");
     my @proj_dirs = ();
@@ -66,9 +68,10 @@ sub parse_options {
         "n|non-core=s@" => \@non_core,
         "h|help"        => sub { pod2usage(1) },
         "o|output=s"    => \(my $output),
-        "q|quiet"       => \(my $quiet),
+        "q|quiet+"      => \(my $quiet = 0),
+        "v|verbose+"    => \(my $verbose = 0),
         "s|strict"      => \(my $strict),
-        "v|version"     => sub { printf "%s %s\n", __PACKAGE__, __PACKAGE__->VERSION; exit },
+        "V|version"     => sub { printf "%s %s\n", __PACKAGE__, __PACKAGE__->VERSION; exit },
         "t|target=s"    => $version_handler,
         "color!"        => \(my $color = 1),
         "use-cache!"    => \(my $cache = 1),
@@ -87,10 +90,8 @@ sub parse_options {
         ? ( map { rel2abs $_, $base } @proj_dirs )
         : ( rel2abs "lib", $base );
     $self->{fatlib_dir} = rel2abs $fatlib_dir, $base;
-    $self->{output}     = $output;
-    $self->{quiet}      = $quiet;
-    $self->{strict}     = $strict;
     $self->{color}      = $color;
+    $self->{strict}     = $strict;
     $self->{target}     = $target_version;
     $self->{perl_strip} = $no_perl_strip ? undef : Perl::Strip->new;
     $self->{custom_shebang} = $custom_shebang;
@@ -106,6 +107,22 @@ sub parse_options {
     # to look up modules and then remove duplicates.
     unshift @{$self->{dir}}, @{$self->{proj_dir}};
     @{$self->{dir}} = uniq @{$self->{dir}};
+
+    # Setting output descriptor. Try to open file supplied from CLI arguments.
+    # If opening failed, show message to user and return to fallback default
+    # mode when logging output shows
+    if (defined $output and $output ne '' and
+        not open($self->{output}, '>:encoding(UTF-8)', $output))
+    {
+        # Assume STDERR is terminal
+        say STDERR colored "Can't open $output for logging!", 'bright_red';
+    }
+    if (not defined $self->{output}) {
+        open($self->{output}, '>&', STDERR);
+    }
+
+    # Setting the verboseness level
+    $self->{verboseness} = $verbose - $quiet;
 
     say for @{$self->{dir}};
     say $self->{fatlib_dir};
@@ -267,7 +284,7 @@ sub packlists_containing {
         my %found;
         @found{map { $pack_reverse_internals{Cwd::abs_path($INC{$_})} || "" } @loadable} = @loadable;
         delete $found{""};
-        say STDERR colored ">>>>> loadable", 'bold green';
+        $self->log(">>>>> loadable", 'info');
         say STDERR for @loadable;
         say STDERR colored ">>>>> orphans loadable", 'bold yellow';
         say STDERR for grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable;
@@ -279,7 +296,7 @@ sub packlists_containing {
         $pipe->writer();
         $pipe->autoflush(1);
         store_fd({
-                loadable => \%found,
+                packlists => \%found,
                 orphaned => [ grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable ],
             }, $pipe);
         exit 0;
@@ -319,6 +336,7 @@ sub packlists_to_tree {
             my $target = rel2abs(abs2rel($source, $pack_base), $where);
             my $target_dir = catpath( (splitpath $target)[0,1] );
             make_path $target_dir;
+            say STDERR "Copying $source to $target";
             copy $source => $target;
         }
     }
@@ -353,7 +371,6 @@ sub module_notation_conv {
     #   0 - dotted >> filename
     # Note: subroutine currently supports only Unix-like systems
     my ($namestring, %args) = @_;
-    say $namestring;
     my $direction = 1;
     if (exists $args{direction}) {
         if ($args{direction} eq 'to_dotted' or
@@ -368,15 +385,26 @@ sub module_notation_conv {
         ? $args{base} 
         : $INC[0];
 
+    my %separators = (  MSWin32 => '\\',
+                        Unix    => '/'  );
+    my $path_separator = $separators{$^O} || $separators{Unix};
+
     if ($direction) {
         my $mod_path = $namestring;
-        if (index $namestring, '/') {
+        if (index $namestring, $path_separator) {
             $mod_path = abs2rel $namestring, $base;
         }
         my @mod_path_parts = splitdir $mod_path;
+        shift @mod_path_parts if $mod_path_parts[0] eq '..';
         $mod_path_parts[-1] =~ s/(.*)\.pm$/$1/;
         return join '::', @mod_path_parts;
     } else {
+        my @mod_name_parts = split '::', $namestring;
+        my $mod_path = join($path_separator, @mod_name_parts) . ".pm";
+        if (exists $args{absolute} and $args{absolute}) {
+            $mod_path = "${base}${path_separator}${mod_path}";
+        }
+        return $mod_path;
     }
 }
 
@@ -435,6 +463,27 @@ sub build_dir {
         }
     }
     return [ grep -d, @dir ];
+}
+
+sub log {
+    my ($self, $msg, $level, @msgs) = @_;
+    my %log_levels = (  "info"      => -1,
+                        "warning"   => 0,
+                        "critical"  => 1,   );
+    # Assume terminal emulator or terminal supports 256 colors
+    my %log_colors = (  "info"      => 'bright_green',
+                        "warning"   => 'bright_yellow',
+                        "critical"  => 'bright_red',    );
+    $level = "warning" if (not exists $log_levels{$level});
+    # Test where we put our logs. If we log to STDERR and STDERR is not
+    # redirectred, we can color logging messages
+    if ($self->{output} ne *STDERR) {
+        say ${$self->{output}};
+        say $self->{output};
+        $msg = colored $msg, $log_colors{$level}
+    }
+    $msg .= join " ", @msgs;
+    say { $self->{output} } $msg if ($self->{verboseness} >= $log_levels{$level});
 }
 
 1;
