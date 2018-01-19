@@ -9,9 +9,11 @@ use Data::Printer;
 use Config;
 use version;
 use List::Util qw/uniq/;
+use Scalar::Util qw/reftype/;
 
 use Storable qw/fd_retrieve store_fd/;
 use IO::Pipe;
+use IO::File;
 
 use Getopt::Long qw/GetOptions/;
 use Pod::Usage qw/pod2usage/;
@@ -90,7 +92,6 @@ sub parse_options {
         ? ( map { rel2abs $_, $base } @proj_dirs )
         : ( rel2abs "lib", $base );
     $self->{fatlib_dir} = rel2abs $fatlib_dir, $base;
-    $self->{color}      = $color;
     $self->{strict}     = $strict;
     $self->{target}     = $target_version;
     $self->{perl_strip} = $no_perl_strip ? undef : Perl::Strip->new;
@@ -108,24 +109,29 @@ sub parse_options {
     unshift @{$self->{dir}}, @{$self->{proj_dir}};
     @{$self->{dir}} = uniq @{$self->{dir}};
 
-    # Setting output descriptor. Try to open file supplied from CLI arguments.
-    # If opening failed, show message to user and return to fallback default
-    # mode when logging output shows
+    # Setting output descriptor. Try to open file supplied from command line.
+    # options. If opening failed, show message to user and return to fallback
+    # default mode (logging to STDERR).
     if (defined $output and $output ne '' and
         not open($self->{output}, '>:encoding(UTF-8)', $output))
     {
-        # Assume STDERR is terminal
-        say STDERR colored "Can't open $output for logging!", 'bright_red';
+        undef $self->{output};
+        my $msg = "Can't open $output for logging!";
+        $msg = colored $msg, 'bright_red' if (is_interactive(\*STDERR));
+        say STDERR $msg;
     }
+
     if (not defined $self->{output}) {
-        open($self->{output}, '>&', STDERR);
+        if (is_interactive(\*STDERR)) {
+            open($self->{output}, '>&', STDERR);
+        } elsif (is_interactive(\*STDOUT)) {
+            open($self->{output}, '>&', STDOUT);
+        } else {
+            $self->{output} = \*STDERR;
+        }
     }
-
-    # Setting the verboseness level
+    $self->{colored_logs} = (is_interactive($self->{output}) and $color) ? 1 : 0;
     $self->{verboseness} = $verbose - $quiet;
-
-    say for @{$self->{dir}};
-    say $self->{fatlib_dir};
 
     return $self;
 }
@@ -171,7 +177,7 @@ sub filter_non_proj_modules {
                 require $non_core; 
                 1;
             } or do {
-                warn "Cannot load $non_core module: $@\n";
+                $self->log("Cannot load $non_core module: $@", 'warning');
             };
             if ( not grep {
                     $INC{$non_core} =~ m!$_/$non_core!
@@ -203,7 +209,7 @@ sub filter_xs_modules {
                 require $module_file; 
                 1; 
             } or do {
-                warn "Failed to load ${module_file}: $@\n";
+                $self->log("Failed to load ${module_file}: $@", 'warning');
             };
             if ( grep { $module_name eq $_ } @DynaLoader::dl_modules ) {
                 say $module_file;
@@ -230,10 +236,10 @@ sub add_forced_core_dependenceies {
 sub packlist {
     my ($self, $deps) = @_;
     my %h = $self->packlists_containing($deps);
-    say STDERR colored ">>>>> non-XS orphans", 'bold yellow';
-    say for grep { my $m = $_; not grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
-    say STDERR colored ">>>> XS orphans", 'bold red';
-    say for grep { my $m = $_; grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
+    $self->log(">>>>> non-XS orphans", 'warning', attrs => 'bold');
+    $self->log($_, colored => 0) for grep { my $m = $_; not grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
+    $self->log(">>>>> XS orphans", 'warning', attrs => 'bold');
+    $self->log($_, colored => 0) for grep { my $m = $_; grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
     return ( keys %{$h{loadable}} );
 }
 
@@ -257,8 +263,8 @@ sub packlists_containing {
                 require $module; 
                 1;
             } or do {
-                warn "Failed to load ${module}: $@"
-                    . "Make sure you're not missing a packlist as a result!\n";
+                $self->log("Failed to load ${module}: $@", 'warning',
+                    msgs => "Make sure you're not missing a packlist as a result!");
                 next;
             };
             push @loadable, $module;
@@ -284,15 +290,14 @@ sub packlists_containing {
         my %found;
         @found{map { $pack_reverse_internals{Cwd::abs_path($INC{$_})} || "" } @loadable} = @loadable;
         delete $found{""};
-        $self->log(">>>>> loadable", 'info');
-        say STDERR for @loadable;
-        say STDERR colored ">>>>> orphans loadable", 'bold yellow';
-        say STDERR for grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable;
-        say STDERR colored ">>>>> packlists", 'bold magenta';
-        say STDERR for keys %found;
-        p %found;
-        say STDERR colored ">>>>> modules with packlists", 'bold cyan';
-        say STDERR colored module_notation_conv($_), 'bold on_yellow' for values %found;
+        $self->log(">>>>> loadable", 'info', attrs => 'bold');
+        $self->log($_, 'info', colored => 0) for @loadable;
+        $self->log(">>>>> orphans loadable", 'warning', attrs => 'bold');
+        $self->log($_, 'warning', colored => 0) for grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable;
+        $self->log(">>>>> packlists", 'info', attrs => 'bold');
+        $self->log($_, 'info', colored => 0) for keys %found;
+        $self->log(">>>>> modules with packlists", 'info', attrs => 'bold');
+        $self->log(module_notation_conv($_), 'info', colored => 0) for values %found;
         $pipe->writer();
         $pipe->autoflush(1);
         store_fd({
@@ -336,7 +341,7 @@ sub packlists_to_tree {
             my $target = rel2abs(abs2rel($source, $pack_base), $where);
             my $target_dir = catpath( (splitpath $target)[0,1] );
             make_path $target_dir;
-            say STDERR "Copying $source to $target";
+            $self->log("Copying $source to $target", 'info', colored => 0);
             copy $source => $target;
         }
     }
@@ -429,26 +434,26 @@ sub run {
     my @non_proj_deps = $self->filter_non_proj_modules(\@non_core_deps);
     @{$self->{xsed_deps}} = $self->filter_xs_modules(\@non_proj_deps);
     
-    say "--- non-core-deps";
-    say for (@non_core_deps);
-    say "--- non-proj-deps";
-    say for (@non_proj_deps);
-    say "--- xsed-deps";
-    say for (@{$self->{xsed_deps}});
+    $self->log("--- non-core-deps", 'info', attrs => 'bold');
+    $self->log($_, 'info', colored => 0) for (@non_core_deps);
+    $self->log("--- non-proj-deps", 'info', attrs => 'bold');
+    $self->log($_, 'info', colored => 0) for (@non_proj_deps);
+    $self->log("--- xsed-deps", 'info', attrs => 'bold');
+    $self->log($_, 'info', colored => 0) for (@{$self->{xsed_deps}});
 
     # $self->add_noncore_dependenceies
     my @packlists = $self->packlist(\@non_proj_deps);
     
-    say "--- packlists";
-    say for (@packlists);
+    $self->log("--- packlists", 'info', attrs => 'bold');
+    $self->log($_, 'info', colored => 0) for (@packlists);
 
     make_path $self->{fatlib_dir};
     
-    say " -- Fatlib directory -- ";
-    say $self->{fatlib_dir};
+    $self->log("Fatlib directory: $self->{fatlib_dir}", 'info', colored => 0, tabs => 0);
     
     my $base = $self->{fatlib_dir};
     $self->packlists_to_tree($base, \@packlists);
+    $self->log("Test msg", msgs => [ 'ff', 'ooo', 'eee' ], attrs => 'bold');
 }
 
 sub build_dir {
@@ -465,8 +470,77 @@ sub build_dir {
     return [ grep -d, @dir ];
 }
 
+# From IO::Interactive
+sub is_interactive {
+    my ($out_handle) = (@_, select);    # Default to default output handle
+ 
+    # Not interactive if output is not to terminal.
+    return 0 if not -t $out_handle;
+ 
+    # If *ARGV is opened, we're interactive if...
+    # (this is what 'Scalar::Util::openhandle *ARGV' boils down to)
+    if ( tied(*ARGV) or defined(fileno(ARGV)) ) {
+     
+        # ...it's currently opened to the magic '-' file
+        return -t *STDIN if defined $ARGV && $ARGV eq '-';
+     
+        # ...it's at end-of-file and the next file is the magic '-' file
+        return @ARGV>0 && $ARGV[0] eq '-' && -t *STDIN if eof *ARGV;
+     
+        # ...it's directly attached to the terminal
+        return -t *ARGV;
+    }
+ 
+    # If *ARGV isn't opened, it will be interactive if *STDIN is attached to
+    # a terminal.
+    else {
+        return -t *STDIN;
+    }
+}
+
+# Logging subroutine of App::FatPacker::Script object.
+# Usage:
+#    $obj->log(MSG, [ [ LEVEL ],
+#       [ msgs => ADD_MSG | [ ADD_MSG_1, ADD_MSG_2, ...] | ADD_MSG_ARY_REF ],
+#       [ attrs => ATTR_STR | [ ATTR_STR_1, ATTR_STR_2, ... ] | ATTR_STR_ARY_REF ],
+#       [ tabs => INT ],
+#       [ colored => 0|1 ] ]);
 sub log {
-    my ($self, $msg, $level, @msgs) = @_;
+    my ($self, $msg, $level, %args) = (shift, shift, undef, ());
+    if (scalar @_ % 2 == 0) {
+        %args = @_;
+    } else {
+        $level = shift;
+        %args = @_;
+    }
+    return unless (defined $msg);
+
+    my $arg_extractor = sub {
+        if (wantarray) {
+            return 
+                exists $args{$_[0]}
+                ? ( defined reftype($args{$_[0]}) and
+                    reftype($args{$_[0]}) eq 'ARRAY' )
+                    ? @{$args{$_[0]}}
+                    : ($args{$_[0]})
+                : ();
+        } elsif (defined wantarray) {
+            return
+                exists $args{$_[0]}
+                ? $args{$_[0]}
+                : $_[1];
+        } else {
+            return
+        }
+    };
+
+    my @msgs = $arg_extractor->('msgs');
+    my @attrs = $arg_extractor->('attrs');
+        
+    my $tabs = $arg_extractor->('tabs', 0);
+    my $colored = $arg_extractor->('colored', 1);
+
+    # Level to int mapping
     my %log_levels = (  "info"      => -1,
                         "warning"   => 0,
                         "critical"  => 1,   );
@@ -474,15 +548,17 @@ sub log {
     my %log_colors = (  "info"      => 'bright_green',
                         "warning"   => 'bright_yellow',
                         "critical"  => 'bright_red',    );
-    $level = "warning" if (not exists $log_levels{$level});
-    # Test where we put our logs. If we log to STDERR and STDERR is not
-    # redirectred, we can color logging messages
-    if ($self->{output} ne *STDERR) {
-        say ${$self->{output}};
-        say $self->{output};
-        $msg = colored $msg, $log_colors{$level}
+
+    if ($colored == 0 and $tabs == 0) {
+        $tabs = 3; 
     }
-    $msg .= join " ", @msgs;
+    if (not defined $level or $level eq '' or not exists $log_levels{$level}) {
+        $level = "warning";
+    }
+    if ($self->{colored_logs} and $colored) {
+        $msg = colored $msg, $log_colors{$level}, @attrs;
+    }
+    $msg = (" " x $tabs) . $msg . (" " . join " ", @msgs);
     say { $self->{output} } $msg if ($self->{verboseness} >= $log_levels{$level});
 }
 
