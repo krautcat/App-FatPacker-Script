@@ -54,7 +54,8 @@ sub parse_options {
 
     # Check, if passed version exists or not
     my $version_handler = sub {
-        my $target = version->parse($_[1] || $target_version)->numify;
+        my ($opt_obj, $version_val) = @_;
+        my $target = version->parse($version_val || $target_version)->numify;
         $target_version = exists $Module::CoreList::version{$target}
             ? $target
             : $target_version;
@@ -117,14 +118,16 @@ sub parse_options {
     {
         undef $self->{output};
         my $msg = "Can't open $output for logging!";
-        $msg = colored $msg, 'bright_red' if (is_interactive(\*STDERR));
+        if ( is_interactive(\*STDERR) ) {
+            $msg = colored $msg, 'bright_red';
+        }
         say STDERR $msg;
     }
 
     if (not defined $self->{output}) {
-        if (is_interactive(\*STDERR)) {
+        if ( is_interactive(\*STDERR) ) {
             open($self->{output}, '>&', STDERR);
-        } elsif (is_interactive(\*STDOUT)) {
+        } elsif ( is_interactive(\*STDOUT) ) {
             open($self->{output}, '>&', STDOUT);
         } else {
             $self->{output} = \*STDERR;
@@ -140,7 +143,9 @@ sub trace_noncore_dependencies {
     my ($self, %args) = @_;
 
     my @opts = ($self->{script});
-    push @opts, '2>/dev/null' if ($self->{quiet});
+    if ($self->{quiet}) {
+        push @opts, '2>/dev/null';
+    }
     my $trace_opts = '>&STDOUT';
 
     local $ENV{PERL5OPT} = join ' ',
@@ -382,7 +387,9 @@ sub module_notation_conv {
             $args{direction} eq 'to_fname'      )
         {
             $direction = $args{direction} eq 'to_dotted' ? 1 : 0;
-        } else {
+        }
+        else
+        {
             return;
         }
     }
@@ -400,7 +407,9 @@ sub module_notation_conv {
             $mod_path = abs2rel $namestring, $base;
         }
         my @mod_path_parts = splitdir $mod_path;
-        shift @mod_path_parts if $mod_path_parts[0] eq '..';
+        if ($mod_path_parts[0] eq '..') {
+            shift @mod_path_parts;
+        }
         $mod_path_parts[-1] =~ s/(.*)\.pm$/$1/;
         return join '::', @mod_path_parts;
     } else {
@@ -516,19 +525,20 @@ sub log {
     return unless (defined $msg);
 
     my $arg_extractor = sub {
+        my ($arg_name, $default_value) = @_; 
         if (wantarray) {
             return 
-                exists $args{$_[0]}
-                ? ( defined reftype($args{$_[0]}) and
-                    reftype($args{$_[0]}) eq 'ARRAY' )
-                    ? @{$args{$_[0]}}
-                    : ($args{$_[0]})
+                exists $args{$arg_name}
+                ? ( defined reftype($args{$arg_name}) and
+                    reftype($args{$arg_name}) eq 'ARRAY' )
+                    ? @{$args{$arg_name}}
+                    : ($args{$arg_name})
                 : ();
         } elsif (defined wantarray) {
             return
-                exists $args{$_[0]}
-                ? $args{$_[0]}
-                : $_[1];
+                exists $args{$arg_name}
+                ? $args{$arg_name}
+                : $default_value;
         } else {
             return
         }
@@ -559,7 +569,9 @@ sub log {
         $msg = colored $msg, $log_colors{$level}, @attrs;
     }
     $msg = (" " x $tabs) . $msg . (" " . join " ", @msgs);
-    say { $self->{output} } $msg if ($self->{verboseness} >= $log_levels{$level});
+    if ($self->{verboseness} >= $log_levels{$level}) {
+        say { $self->{output} } $msg;
+    }
 }
 
 1;
