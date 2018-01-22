@@ -10,13 +10,11 @@ use Config;
 use version;
 use List::Util qw/uniq/;
 use Scalar::Util qw/reftype/;
-
 use Storable qw/fd_retrieve store_fd/;
-use IO::Pipe;
-use IO::File;
 
-use Getopt::Long qw/GetOptions/;
-use Pod::Usage qw/pod2usage/;
+use IO::File;
+use IO::Pipe;
+use IO::Interactive qw/is_interactive/;
 use Term::ANSIColor;
 
 use Cwd qw/cwd/;
@@ -29,6 +27,10 @@ use File::Spec::Functions qw/
     rel2abs abs2rel
     file_name_is_absolute
     /;
+
+use Getopt::Long qw/GetOptions/;
+use Pod::Usage qw/pod2usage/;
+
 # use Perl::Strip;
 use Module::CoreList;
 use App::FatPacker;
@@ -84,7 +86,7 @@ sub parse_options {
         or pod2usage(2);
 
     $self->{script}     = shift @ARGV or do { warn "Missing scirpt.\n"; pod2usage(2) };
-    push @{$self->{dir}}, map { $_ = rel2abs $_, $base }
+    push @{$self->{dir}}, map { rel2abs $_, $base }
                           split( /,/, join(',', @dirs) );
     push @{$self->{forced_CORE}}, split( /,/, join(',', @additional_core) );
     push @{$self->{non_CORE}}, split( /,/, join(',', @non_core) );
@@ -179,7 +181,7 @@ sub filter_non_proj_modules {
         local @INC = (@{$self->{dir}}, @INC);
         for my $non_core (@$modules) {
             eval {
-                require $non_core; 
+                require $non_core;
                 1;
             } or do {
                 $self->log("Cannot load $non_core module: $@", 'warning');
@@ -210,9 +212,9 @@ sub filter_xs_modules {
         local @INC = (@{$self->{dir}}, @INC);
         for my $module_file (@$modules) {
             my $module_name = $module_file =~ s!/!::!gr =~ s!.pm$!!r;
-            eval { 
-                require $module_file; 
-                1; 
+            eval {
+                require $module_file;
+                1;
             } or do {
                 $self->log("Failed to load ${module_file}: $@", 'warning');
             };
@@ -265,7 +267,7 @@ sub packlists_containing {
         my @loadable = ();
         for my $module (@$module_files) {
             eval {
-                require $module; 
+                require $module;
                 1;
             } or do {
                 $self->log("Failed to load ${module}: $@", 'warning',
@@ -318,7 +320,7 @@ sub packlists_to_tree {
     if (not $self->{use_cache}) {
         remove_tree $where;
         make_path $where;
-    } 
+    }
 
     for my $plist (@$packlists) {
         my ($volume, $dir_path, $file) = splitpath $plist;
@@ -332,7 +334,7 @@ sub packlists_to_tree {
                 # so use $p-3 in that case
                 my $version_lib = 0+!!( $dirs_path[$n - 1] =~ /^[0-9.]+$/ );
                 $pack_base = catpath(
-                    $volume, 
+                    $volume,
                     catdir @dirs_path[0 .. $n - (2 + $version_lib)]
                 );
                 last;
@@ -393,8 +395,8 @@ sub module_notation_conv {
             return;
         }
     }
-    my $base = (exists $args{base} and not $args{base} eq "") 
-        ? $args{base} 
+    my $base = (exists $args{base} and not $args{base} eq "")
+        ? $args{base}
         : $INC[0];
 
     my %separators = (  MSWin32 => '\\',
@@ -436,13 +438,13 @@ sub exclude_ary {
 sub run {
     my ($self) = @_;
     my @non_core_deps = (
-        $self->trace_noncore_dependencies(to_packlist => 1), 
+        $self->trace_noncore_dependencies(to_packlist => 1),
         @{$self->{non_CORE}}
     );
     $self->add_forced_core_dependenceies(\@non_core_deps);
     my @non_proj_deps = $self->filter_non_proj_modules(\@non_core_deps);
     @{$self->{xsed_deps}} = $self->filter_xs_modules(\@non_proj_deps);
-    
+
     $self->log("--- non-core-deps", 'info', attrs => 'bold');
     $self->log($_, 'info', colored => 0) for (@non_core_deps);
     $self->log("--- non-proj-deps", 'info', attrs => 'bold');
@@ -452,14 +454,14 @@ sub run {
 
     # $self->add_noncore_dependenceies
     my @packlists = $self->packlist(\@non_proj_deps);
-    
+
     $self->log("--- packlists", 'info', attrs => 'bold');
     $self->log($_, 'info', colored => 0) for (@packlists);
 
     make_path $self->{fatlib_dir};
-    
+
     $self->log("Fatlib directory: $self->{fatlib_dir}", 'info', colored => 0, tabs => 0);
-    
+
     my $base = $self->{fatlib_dir};
     $self->packlists_to_tree($base, \@packlists);
     $self->log("Test msg", msgs => [ 'ff', 'ooo', 'eee' ], attrs => 'bold');
@@ -479,34 +481,6 @@ sub build_dir {
     return [ grep -d, @dir ];
 }
 
-# From IO::Interactive
-sub is_interactive {
-    my ($out_handle) = (@_, select);    # Default to default output handle
- 
-    # Not interactive if output is not to terminal.
-    return 0 if not -t $out_handle;
- 
-    # If *ARGV is opened, we're interactive if...
-    # (this is what 'Scalar::Util::openhandle *ARGV' boils down to)
-    if ( tied(*ARGV) or defined(fileno(ARGV)) ) {
-     
-        # ...it's currently opened to the magic '-' file
-        return -t *STDIN if defined $ARGV && $ARGV eq '-';
-     
-        # ...it's at end-of-file and the next file is the magic '-' file
-        return @ARGV>0 && $ARGV[0] eq '-' && -t *STDIN if eof *ARGV;
-     
-        # ...it's directly attached to the terminal
-        return -t *ARGV;
-    }
- 
-    # If *ARGV isn't opened, it will be interactive if *STDIN is attached to
-    # a terminal.
-    else {
-        return -t *STDIN;
-    }
-}
-
 # Logging subroutine of App::FatPacker::Script object.
 # Usage:
 #    $obj->log(MSG, [ [ LEVEL ],
@@ -514,65 +488,6 @@ sub is_interactive {
 #       [ attrs => ATTR_STR | [ ATTR_STR_1, ATTR_STR_2, ... ] | ATTR_STR_ARY_REF ],
 #       [ tabs => INT ],
 #       [ colored => 0|1 ] ]);
-sub log {
-    my ($self, $msg, $level, %args) = (shift, shift, undef, ());
-    if (scalar @_ % 2 == 0) {
-        %args = @_;
-    } else {
-        $level = shift;
-        %args = @_;
-    }
-    return unless (defined $msg);
-
-    my $arg_extractor = sub {
-        my ($arg_name, $default_value) = @_; 
-        if (wantarray) {
-            return 
-                exists $args{$arg_name}
-                ? ( defined reftype($args{$arg_name}) and
-                    reftype($args{$arg_name}) eq 'ARRAY' )
-                    ? @{$args{$arg_name}}
-                    : ($args{$arg_name})
-                : ();
-        } elsif (defined wantarray) {
-            return
-                exists $args{$arg_name}
-                ? $args{$arg_name}
-                : $default_value;
-        } else {
-            return
-        }
-    };
-
-    my @msgs = $arg_extractor->('msgs');
-    my @attrs = $arg_extractor->('attrs');
-        
-    my $tabs = $arg_extractor->('tabs', 0);
-    my $colored = $arg_extractor->('colored', 1);
-
-    # Level to int mapping
-    my %log_levels = (  "info"      => -1,
-                        "warning"   => 0,
-                        "critical"  => 1,   );
-    # Assume terminal emulator or terminal supports 256 colors
-    my %log_colors = (  "info"      => 'bright_green',
-                        "warning"   => 'bright_yellow',
-                        "critical"  => 'bright_red',    );
-
-    if ($colored == 0 and $tabs == 0) {
-        $tabs = 3; 
-    }
-    if (not defined $level or $level eq '' or not exists $log_levels{$level}) {
-        $level = "warning";
-    }
-    if ($self->{colored_logs} and $colored) {
-        $msg = colored $msg, $log_colors{$level}, @attrs;
-    }
-    $msg = (" " x $tabs) . $msg . (" " . join " ", @msgs);
-    if ($self->{verboseness} >= $log_levels{$level}) {
-        say { $self->{output} } $msg;
-    }
-}
 
 1;
 __END__
