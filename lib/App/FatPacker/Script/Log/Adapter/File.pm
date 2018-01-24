@@ -14,7 +14,7 @@ use IO::File ();
 sub new {
     my ($class, $file, @args) = @_;
 
-    # Defaultise arguments
+    # Defaultize arguments
     my $log_level = (exists $args{log_level})
         ? $args{log_level}
         : 'warning';
@@ -36,11 +36,11 @@ sub init {
         write   => 1,
         append  => 1,
     );
-    my %bin_modes = (
-        utf8    => 1,
-    );
-    foreach $k (keys %bin_modes) {
-        $bin_modes{":$k"} = 1;
+    foreach my $m ('<')
+
+    my %bin_modes = ();
+    foreach my $l ('unix', 'stdio', 'crlf', 'perlio', 'utf8', 'bytes', 'raw') {
+        @bin_modes{$l, ":$l"} = (1, 1);
     }
 
     my $log_level = Log::Any::Adapter::Util::numeric_level($self->{log_level});
