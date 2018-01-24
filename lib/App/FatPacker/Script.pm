@@ -31,6 +31,10 @@ use File::Spec::Functions qw/
 use Getopt::Long qw/GetOptions/;
 use Pod::Usage qw/pod2usage/;
 
+use Log::Any;
+use Log::Any::Adepter;
+use Log::Any::Plugin;
+
 # use Perl::Strip;
 use Module::CoreList;
 use App::FatPacker;
@@ -115,24 +119,29 @@ sub parse_options {
     # Setting output descriptor. Try to open file supplied from command line.
     # options. If opening failed, show message to user and return to fallback
     # default mode (logging to STDERR).
-    if (defined $output and $output ne '' and
-        not open($self->{output}, '>:encoding(UTF-8)', $output))
-    {
-        undef $self->{output};
-        my $msg = "Can't open $output for logging!";
-        if ( is_interactive(\*STDERR) ) {
-            $msg = colored $msg, 'bright_red';
+    my $log_set = 0;
+    if (defined $output and $output ne '') {
+        eval {
+            Log::Any::Adapter->set('File', $output);
+            $log_set = 1;
+        } or do {
+            my $msg = "Can't open $output for logging!";
+            if ( is_interactive(\*STDERR) ) {
+                $msg = colored $msg, 'bright_red';
+            }
+            say STDERR $msg;
         }
-        say STDERR $msg;
     }
 
-    if (not defined $self->{output}) {
+    if (not $log_set) {
         if ( is_interactive(\*STDERR) ) {
-            open($self->{output}, '>&', STDERR);
+            Log::Any::Adapter->set('Stderr');
+            Log::Any::Plugin->add('ANSIColor');
         } elsif ( is_interactive(\*STDOUT) ) {
-            open($self->{output}, '>&', STDOUT);
+            Log::Any::Adapter->set('Stdout');
+            Log::Any::Plugin->add('ANSIColor');
         } else {
-            $self->{output} = \*STDERR;
+            Log::Any::Adapter->set('Stderr');
         }
     }
     $self->{colored_logs} = (is_interactive($self->{output}) and $color) ? 1 : 0;
