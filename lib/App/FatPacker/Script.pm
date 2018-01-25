@@ -32,7 +32,7 @@ use Getopt::Long qw/GetOptions/;
 use Pod::Usage qw/pod2usage/;
 
 use Log::Any;
-use Log::Any::Adepter;
+use Log::Any::Adapter;
 use Log::Any::Plugin;
 
 # use Perl::Strip;
@@ -122,7 +122,7 @@ sub parse_options {
     my $log_set = 0;
     if (defined $output and $output ne '') {
         eval {
-            Log::Any::Adapter->set('File', $output);
+            Log::Any::Adapter->set('File', $output, log_level => 'debug');
             $log_set = 1;
         } or do {
             my $msg = "Can't open $output for logging!";
@@ -136,16 +136,17 @@ sub parse_options {
     if (not $log_set) {
         if ( is_interactive(\*STDERR) ) {
             Log::Any::Adapter->set('Stderr');
-            Log::Any::Plugin->add('ANSIColor');
+            Log::Any::Plugin->add('ANSIColor');
         } elsif ( is_interactive(\*STDOUT) ) {
             Log::Any::Adapter->set('Stdout');
-            Log::Any::Plugin->add('ANSIColor');
+            Log::Any::Plugin->add('ANSIColor');
         } else {
             Log::Any::Adapter->set('Stderr');
         }
     }
     $self->{colored_logs} = (is_interactive($self->{output}) and $color) ? 1 : 0;
     $self->{verboseness} = $verbose - $quiet;
+    $self->{logger} = Log::Any->get_logger();
 
     return $self;
 }
@@ -193,7 +194,7 @@ sub filter_non_proj_modules {
                 require $non_core;
                 1;
             } or do {
-                $self->log("Cannot load $non_core module: $@", 'warning');
+                $self->{logger}->warn("Cannot load $non_core module: $@");
             };
             if ( not grep {
                     $INC{$non_core} =~ m!$_/$non_core!
@@ -225,7 +226,7 @@ sub filter_xs_modules {
                 require $module_file;
                 1;
             } or do {
-                $self->log("Failed to load ${module_file}: $@", 'warning');
+                $self->{logger}->warn("Failed to load ${module_file}: $@");
             };
             if ( grep { $module_name eq $_ } @DynaLoader::dl_modules ) {
                 say $module_file;
@@ -252,10 +253,10 @@ sub add_forced_core_dependenceies {
 sub packlist {
     my ($self, $deps) = @_;
     my %h = $self->packlists_containing($deps);
-    $self->log(">>>>> non-XS orphans", 'warning', attrs => 'bold');
-    $self->log($_, colored => 0) for grep { my $m = $_; not grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
-    $self->log(">>>>> XS orphans", 'warning', attrs => 'bold');
-    $self->log($_, colored => 0) for grep { my $m = $_; grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
+    $self->{logger}->info(">>>>> non-XS orphans");
+    $self->{logger}->info($_) for grep { my $m = $_; not grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
+    $self->{logger}->info(">>>>> XS orphans");
+    $self->{logger}->info($_) for grep { my $m = $_; grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
     return ( keys %{$h{loadable}} );
 }
 
@@ -279,8 +280,7 @@ sub packlists_containing {
                 require $module;
                 1;
             } or do {
-                $self->log("Failed to load ${module}: $@", 'warning',
-                    msgs => "Make sure you're not missing a packlist as a result!");
+                $self->{logger}->warn("Failed to load ${module}: $@. Make sure you're not missing a packlist as a result!");
                 next;
             };
             push @loadable, $module;
@@ -306,14 +306,14 @@ sub packlists_containing {
         my %found;
         @found{map { $pack_reverse_internals{Cwd::abs_path($INC{$_})} || "" } @loadable} = @loadable;
         delete $found{""};
-        $self->log(">>>>> loadable", 'info', attrs => 'bold');
-        $self->log($_, 'info', colored => 0) for @loadable;
-        $self->log(">>>>> orphans loadable", 'warning', attrs => 'bold');
-        $self->log($_, 'warning', colored => 0) for grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable;
-        $self->log(">>>>> packlists", 'info', attrs => 'bold');
-        $self->log($_, 'info', colored => 0) for keys %found;
-        $self->log(">>>>> modules with packlists", 'info', attrs => 'bold');
-        $self->log(module_notation_conv($_), 'info', colored => 0) for values %found;
+        $self->{logger}->info(">>>>> loadable");
+        $self->{logger}->info($_) for @loadable;
+        $self->{logger}->info(">>>>> orphans loadable");
+        $self->{logger}->info($_) for grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable;
+        $self->{logger}->info(">>>>> packlists");
+        $self->{logger}->info($_) for keys %found;
+        $self->{logger}->info(">>>>> modules with packlists");
+        $self->{logger}->info(module_notation_conv($_)) for values %found;
         $pipe->writer();
         $pipe->autoflush(1);
         store_fd({
@@ -357,7 +357,7 @@ sub packlists_to_tree {
             my $target = rel2abs(abs2rel($source, $pack_base), $where);
             my $target_dir = catpath( (splitpath $target)[0,1] );
             make_path $target_dir;
-            $self->log("Copying $source to $target", 'info', colored => 0);
+            $self->{logger}->info("Copying $source to $target");
             copy $source => $target;
         }
     }
@@ -454,26 +454,25 @@ sub run {
     my @non_proj_deps = $self->filter_non_proj_modules(\@non_core_deps);
     @{$self->{xsed_deps}} = $self->filter_xs_modules(\@non_proj_deps);
 
-    $self->log("--- non-core-deps", 'info', attrs => 'bold');
-    $self->log($_, 'info', colored => 0) for (@non_core_deps);
-    $self->log("--- non-proj-deps", 'info', attrs => 'bold');
-    $self->log($_, 'info', colored => 0) for (@non_proj_deps);
-    $self->log("--- xsed-deps", 'info', attrs => 'bold');
-    $self->log($_, 'info', colored => 0) for (@{$self->{xsed_deps}});
+    $self->{logger}->info("--- non-core-deps");
+    $self->{logger}->info($_) for (@non_core_deps);
+    $self->{logger}->info("--- non-proj-deps");
+    $self->{logger}->info($_) for (@non_proj_deps);
+    $self->{logger}->info("--- xsed-deps");
+    $self->{logger}->info($_) for (@{$self->{xsed_deps}});
 
     # $self->add_noncore_dependenceies
     my @packlists = $self->packlist(\@non_proj_deps);
 
-    $self->log("--- packlists", 'info', attrs => 'bold');
-    $self->log($_, 'info', colored => 0) for (@packlists);
+    $self->{logger}->info("--- packlists");
+    $self->{logger}->info($_) for (@packlists);
 
     make_path $self->{fatlib_dir};
 
-    $self->log("Fatlib directory: $self->{fatlib_dir}", 'info', colored => 0, tabs => 0);
+    $self->{logger}->info("Fatlib directory: $self->{fatlib_dir}");
 
     my $base = $self->{fatlib_dir};
     $self->packlists_to_tree($base, \@packlists);
-    $self->log("Test msg", msgs => [ 'ff', 'ooo', 'eee' ], attrs => 'bold');
 }
 
 sub build_dir {
