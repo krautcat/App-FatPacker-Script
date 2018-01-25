@@ -32,11 +32,13 @@ sub new {
 sub init {
     my $self = shift;
 
-    my %open_modes = (
-        write   => 1,
-        append  => 1,
-    );
-    foreach my $m ('<')
+    my %open_modes_aliases = ();
+    my %open_modes = ();
+    foreach my $m (['<', 'r'], ['>', 'w', 'write'], ['>>', 'a', 'append'],
+        ['+<', 'r+'], ['+>', 'w+'], ['+>>', 'a+']) {
+        $open_modes{$m->[0]} = 1;
+        @open_modes_aliases{@$m[1 .. $#m]} = ($m->[0]) x (scalar(@$m) - 1);
+    }
 
     my %bin_modes = ();
     foreach my $l ('unix', 'stdio', 'crlf', 'perlio', 'utf8', 'bytes', 'raw') {
