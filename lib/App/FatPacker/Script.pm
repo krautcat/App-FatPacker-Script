@@ -122,10 +122,10 @@ sub parse_options {
     my $log_set = 0;
     if (defined $output and $output ne '') {
         eval {
-            Log::Any::Adapter->set('File', $output, log_level => 'debug');
+            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::File', $output, log_level => 'debug', timestamp => 1);
             $log_set = 1;
         } or do {
-            my $msg = "Can't open $output for logging!";
+            my $msg = "Can't open $output for logging! Reason: $@";
             if ( is_interactive(\*STDERR) ) {
                 $msg = colored $msg, 'bright_red';
             }
@@ -459,7 +459,7 @@ sub run {
     $self->{logger}->info("--- non-proj-deps");
     $self->{logger}->info($_) for (@non_proj_deps);
     $self->{logger}->info("--- xsed-deps");
-    $self->{logger}->info($_) for (@{$self->{xsed_deps}});
+    $self->{logger}->debug($_) for (@{$self->{xsed_deps}});
 
     # $self->add_noncore_dependenceies
     my @packlists = $self->packlist(\@non_proj_deps);

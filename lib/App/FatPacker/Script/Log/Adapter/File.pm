@@ -9,10 +9,13 @@ use base qw/Log::Any::Adapter::Base/;
 
 use Carp ();
 
+use Config;
+
+use Fcntl qw/:flock/;
 use IO::File ();
 
 sub new {
-    my ($class, $file, @args) = @_;
+    my ($class, $file, %args) = @_;
 
     # Defaultize arguments
     my $log_level = (exists $args{log_level})
@@ -21,12 +24,21 @@ sub new {
     my $binmode = (exists $args{binmode})
         ? $args{binmode}
         : 'utf8';
+    my $tabulation = (exists $args{tabulation} and
+            ref($args{tabulation}) eq 'HASH')
+        ? $args{tabulation}
+        : undef;
+    my $timestamp = (exists $args{timestamp} and $args{timestamp})
+        ? $args{timestamp}
+        : undef;
     
     return $class->SUPER::new(
         file => $file,
         log_level => $log_level,
         binmode => $binmode,
-        @args);
+        tabulation => $tabulation,
+        timestamp => $timestamp,
+        %args);
 }
 
 sub init {
@@ -37,7 +49,7 @@ sub init {
     foreach my $m (['<', 'r'], ['>', 'w', 'write'], ['>>', 'a', 'append'],
         ['+<', 'r+'], ['+>', 'w+'], ['+>>', 'a+']) {
         $open_modes{$m->[0]} = 1;
-        @open_modes_aliases{@$m[1 .. $#m]} = ($m->[0]) x (scalar(@$m) - 1);
+        @open_modes_aliases{@$m[1 .. $#$m]} = ($m->[0]) x (scalar(@$m) - 1);
     }
 
     my %bin_modes = ();
@@ -49,11 +61,12 @@ sub init {
     if (not defined $log_level) {
         Carp::carp( sprintf ('Invalid log level "%s".' .
                 'Rollback to default "%s" level',
-                $self->{log_level}, 'warning');
+                $self->{log_level}, 'warning') );
         $log_level = Log::Any::Adapter::Util::numeric_level('warning');
     }
-    
-    my $mode = exists $self->{mode} and $self->{mode} ne '' ? $self->{mode} : '>';
+    $self->{log_level} = $log_level;
+
+    my $mode = (exists($self->{mode}) and $self->{mode} ne '') ? $self->{mode} : '>';
     if ($open_modes{$mode} and $mode ne '<') {
         $self->{mode} = $open_modes{$mode};
     } elsif (exists $open_modes_aliases{$mode} and $open_modes_aliases{$mode} ne '<') {
@@ -64,7 +77,7 @@ sub init {
     
     my $filename = $self->{file};
     $self->{file} = IO::File->new($filename, $mode);
-    Carp::croak "Cannot open $filename for logging" unless defined $self->{file};
+    Carp::croak "Can't open $filename for logging" unless defined $self->{file};
     
     my $binmode = exists $bin_modes{$self->{binmode}}
         ? substr($self->{binmode}, 0, 1) eq ':'
@@ -78,18 +91,35 @@ sub init {
     $self->{__has_flock} = $Config{d_flock} || $Config{d_fcntl_can_lock} || $Config{d_lockf};
 }
 
+sub timestamp {
+    my $self = shift;
+    return $self->{timestamp}
+        ? sprintf "[%s] ", scalar(localtime)
+        : "";
+}
+
 # Used from Log::Any::Adapter::File
 foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
     no strict 'refs';
-    my $method_level = Log::Any::Adapter::Util::numeric_level( $method );
-    *{$method} = sub {
-        my ( $self, $text ) = @_;
-        return if $method_level > $self->{log_level};
-        my $msg = sprintf( "[%s] %s\n", scalar(localtime), $text );
-        flock($self->{fh}, LOCK_EX) if $self->{__has_flock};
-        $self->{fh}->print($msg);
-        flock($self->{fh}, LOCK_UN) if $self->{__has_flock};
-      }
+    my $method_level = Log::Any::Adapter::Util::numeric_level($method);
+    if ( $method_level < Log::Any::Adapter::Util::numeric_level('debug') ) {
+        *{$method} = sub {
+            my ( $self, $text ) = @_;
+            return if $method_level > $self->{log_level};
+            my $msg = sprintf( "%s%s\n", $self->timestamp(), $text );
+            flock($self->{file}, LOCK_EX) if $self->{__has_flock};
+            $self->{file}->print($msg);
+            flock($self->{file}, LOCK_UN) if $self->{__has_flock};
+        }
+    } else {
+        *{$method} = sub {
+            my ($self, $text) = @_;
+            return if $method_level > $self->{log_level};
+            my $msg = sprintf( "%s   %s\n", $self->timestamp(), $text );
+            flock($self->{file}, LOCK_EX) if $self->{__has_flock};
+            $self->{file}->print($msg);
+        }
+    }
 }
 
 foreach my $method ( Log::Any::Adapter::Util::detection_methods() ) {
@@ -101,3 +131,4 @@ foreach my $method ( Log::Any::Adapter::Util::detection_methods() ) {
     };
 }
 
+1;
