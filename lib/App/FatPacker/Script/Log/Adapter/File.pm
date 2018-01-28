@@ -8,11 +8,26 @@ use Log::Any::Adapter::Util ();
 use base qw/Log::Any::Adapter::Base/;
 
 use Carp ();
+use Scalar::Util qw/looks_like_number/;
 
 use Config;
 
 use Fcntl qw/:flock/;
 use IO::File ();
+
+my %defaults = (
+    indentation => {
+        trace       => 0,
+        debug       => 0,
+        info        => 0,
+        notice      => 0,
+        warning     => 0,
+        error       => 0,
+        critical    => 0,
+        alert       => 0,
+        emergency   => 0,
+    }
+)
 
 sub new {
     my ($class, $file, %args) = @_;
@@ -24,10 +39,10 @@ sub new {
     my $binmode = (exists $args{binmode})
         ? $args{binmode}
         : 'utf8';
-    my $tabulation = (exists $args{tabulation} and
-            ref($args{tabulation}) eq 'HASH')
-        ? $args{tabulation}
-        : undef;
+    my $indentation = (exists $args{indentation} and
+            ref($args{indentation}) eq 'HASH')
+        ? $args{indentation}
+        : {}};
     my $timestamp = (exists $args{timestamp} and $args{timestamp})
         ? $args{timestamp}
         : undef;
@@ -36,7 +51,7 @@ sub new {
         file => $file,
         log_level => $log_level,
         binmode => $binmode,
-        tabulation => $tabulation,
+        indentation => $indentation,
         timestamp => $timestamp,
         %args);
 }
@@ -57,8 +72,13 @@ sub init {
         @bin_modes{$l, ":$l"} = (1, 1);
     }
 
-    my $log_level = Log::Any::Adapter::Util::numeric_level($self->{log_level});
-    if (not defined $log_level) {
+    my $log_level = looks_like_number($self->{log_level})
+        ? Log::Any::Adapter::Util::numeric_level('warning') + $self->{log_level}
+        : Log::Any::Adapter::Util::numeric_level($self->{log_level});
+    if ( not defined $log_level 
+        or $log_level > Log::Any::Adapter::Util::numeric_level('trace')
+        or $log_level < Log::Any::Adapter::Util::numeric_level('emergency') )
+    {
         Carp::carp( sprintf ('Invalid log level "%s".' .
                 'Rollback to default "%s" level',
                 $self->{log_level}, 'warning') );
@@ -66,7 +86,9 @@ sub init {
     }
     $self->{log_level} = $log_level;
 
-    my $mode = (exists($self->{mode}) and $self->{mode} ne '') ? $self->{mode} : '>';
+    my $mode = (exists($self->{mode}) and $self->{mode} ne '')
+        ? $self->{mode}
+        : '>';
     if ($open_modes{$mode} and $mode ne '<') {
         $self->{mode} = $open_modes{$mode};
     } elsif (exists $open_modes_aliases{$mode} and $open_modes_aliases{$mode} ne '<') {
@@ -89,6 +111,10 @@ sub init {
 
     # File locking possibility
     $self->{__has_flock} = $Config{d_flock} || $Config{d_fcntl_can_lock} || $Config{d_lockf};
+
+    foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
+        $indentation->{$method} ||= $default{$method};
+    }
 }
 
 sub timestamp {
@@ -102,23 +128,14 @@ sub timestamp {
 foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
     no strict 'refs';
     my $method_level = Log::Any::Adapter::Util::numeric_level($method);
-    if ( $method_level < Log::Any::Adapter::Util::numeric_level('debug') ) {
-        *{$method} = sub {
-            my ( $self, $text ) = @_;
-            return if $method_level > $self->{log_level};
-            my $msg = sprintf( "%s%s\n", $self->timestamp(), $text );
-            flock($self->{file}, LOCK_EX) if $self->{__has_flock};
-            $self->{file}->print($msg);
-            flock($self->{file}, LOCK_UN) if $self->{__has_flock};
-        }
-    } else {
-        *{$method} = sub {
-            my ($self, $text) = @_;
-            return if $method_level > $self->{log_level};
-            my $msg = sprintf( "%s   %s\n", $self->timestamp(), $text );
-            flock($self->{file}, LOCK_EX) if $self->{__has_flock};
-            $self->{file}->print($msg);
-        }
+    my $format_string = "%s" . (" " x $self->indentation->{$method}) . "%s\n"
+    *{$method} = sub {
+        my ( $self, $text ) = @_;
+        return if $method_level > $self->{log_level};
+        my $msg = sprintf($format_string, $self->timestamp(), $text);
+        flock($self->{file}, LOCK_EX) if $self->{__has_flock};
+        $self->{file}->print($msg);
+        flock($self->{file}, LOCK_UN) if $self->{__has_flock};
     }
 }
 

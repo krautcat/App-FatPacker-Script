@@ -119,33 +119,21 @@ sub parse_options {
     # Setting output descriptor. Try to open file supplied from command line.
     # options. If opening failed, show message to user and return to fallback
     # default mode (logging to STDERR).
-    my $log_set = 0;
     if (defined $output and $output ne '') {
         eval {
-            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::File', $output, log_level => 'debug', timestamp => 1);
-            $log_set = 1;
+            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::File', $output, log_level => ($verbose - $quiet), timestamp => 1);
         } or do {
             my $msg = "Can't open $output for logging! Reason: $@";
             if ( is_interactive(\*STDERR) ) {
                 $msg = colored $msg, 'bright_red';
             }
-            say STDERR $msg;
+            warn $msg;
+            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::Interactive', log_level => ($verbose - $quiet), colored => $color);
         }
+    } else {
+        Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::Interactive', log_level => ($verbose - $quiet), colored => $color);
     }
-
-    if (not $log_set) {
-        if ( is_interactive(\*STDERR) ) {
-            Log::Any::Adapter->set('Stderr');
-            Log::Any::Plugin->add('ANSIColor');
-        } elsif ( is_interactive(\*STDOUT) ) {
-            Log::Any::Adapter->set('Stdout');
-            Log::Any::Plugin->add('ANSIColor');
-        } else {
-            Log::Any::Adapter->set('Stderr');
-        }
-    }
-    $self->{colored_logs} = (is_interactive($self->{output}) and $color) ? 1 : 0;
-    $self->{verboseness} = $verbose - $quiet;
+    
     $self->{logger} = Log::Any->get_logger();
 
     return $self;
