@@ -11,7 +11,7 @@ use Carp ();
 use Scalar::Util qw/looks_like_number/;
 
 use IO::File;
-use IO::Interactive;
+use IO::Interactive qw/is_interactive/;
 
 use Term::ANSIColor ();
 
@@ -39,7 +39,7 @@ my %defaults = (
         debug      => 'cyan',
         trace      => 'blue',
     },
-)
+);
 
 sub new {
     my ($class, %args) = @_;
@@ -69,7 +69,7 @@ sub init {
     my $self = shift;
 
     my $error = "";
-    foreach my $fh (STDERR, STDOUT) {
+    foreach my $fh ('STDERR', 'STDOUT') {
         if (is_interactive($fh) and not defined $self->{fh}) {
             eval {
                 open($self->{fh}, '>&', $fh);
@@ -102,7 +102,7 @@ sub init {
     }
     $self->{log_level} = $log_level;
 
-    foreach my $lvl (keys %default_colors) {
+    foreach my $lvl (keys %{$defaults{colors}}) {
        $self->{colors}->{$lvl} ||= $defaults{colors}{$lvl};
     }
 }
@@ -118,12 +118,12 @@ sub colored {
 foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
     no strict 'refs';
     my $method_level = Log::Any::Adapter::Util::numeric_level($method);
-    my $format_string = (" " x $self->indentation->{$method}) . "%s\n"
     *{$method} = sub {
         my ( $self, $text ) = @_;
+        my $format_string = (" " x $self->indentation->{$method}) . "%s\n";
         return if $method_level > $self->{log_level};
         my $msg = sprintf( $format_string, colored($text, $method) );
-        print $self->{fh} $msg;
+        print { $self->{fh} } $msg;
     }
 }
 

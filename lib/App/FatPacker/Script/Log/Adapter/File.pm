@@ -128,9 +128,9 @@ sub timestamp {
 foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
     no strict 'refs';
     my $method_level = Log::Any::Adapter::Util::numeric_level($method);
-    my $format_string = "%s" . (" " x $self->indentation->{$method}) . "%s\n"
     *{$method} = sub {
         my ( $self, $text ) = @_;
+        my $format_string = "%s" . (" " x $self->indentation->{$method}) . "%s\n";
         return if $method_level > $self->{log_level};
         my $msg = sprintf($format_string, $self->timestamp(), $text);
         flock($self->{file}, LOCK_EX) if $self->{__has_flock};
