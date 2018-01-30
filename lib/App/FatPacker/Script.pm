@@ -33,9 +33,8 @@ use Pod::Usage qw/pod2usage/;
 
 use Log::Any;
 use Log::Any::Adapter;
-use Log::Any::Plugin;
 
-# use Perl::Strip;
+use Perl::Strip;
 use Module::CoreList;
 use App::FatPacker;
 
@@ -119,22 +118,24 @@ sub parse_options {
     # Setting output descriptor. Try to open file supplied from command line.
     # options. If opening failed, show message to user and return to fallback
     # default mode (logging to STDERR).
+    my $verboseness = $verbose - $quiet;
     if (defined $output and $output ne '') {
         eval {
-            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::File', $output, log_level => ($verbose - $quiet), timestamp => 1);
+            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::File', $output, log_level => $verboseness, timestamp => 1);
         } or do {
             my $msg = "Can't open $output for logging! Reason: $@";
             if ( is_interactive(\*STDERR) ) {
                 $msg = colored $msg, 'bright_red';
             }
             warn $msg;
-            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::Interactive', log_level => ($verbose - $quiet), colored => $color);
+            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::Interactive', log_level => $verboseness, colored => $color);
         }
     } else {
-        Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::Interactive', log_level => ($verbose - $quiet), colored => $color);
+        Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::Interactive', log_level => $verboseness, colored => $color);
     }
     
     $self->{logger} = Log::Any->get_logger();
+    $self->{verboseness} = $verboseness;
 
     return $self;
 }
