@@ -27,7 +27,7 @@ my %defaults = (
         alert       => 0,
         emergency   => 0,
     }
-)
+);
 
 sub new {
     my ($class, $file, %args) = @_;
@@ -42,7 +42,7 @@ sub new {
     my $indentation = (exists $args{indentation} and
             ref($args{indentation}) eq 'HASH')
         ? $args{indentation}
-        : {}};
+        : {};
     my $timestamp = (exists $args{timestamp} and $args{timestamp})
         ? $args{timestamp}
         : undef;
@@ -113,7 +113,7 @@ sub init {
     $self->{__has_flock} = $Config{d_flock} || $Config{d_fcntl_can_lock} || $Config{d_lockf};
 
     foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
-        $indentation->{$method} ||= $default{$method};
+        $self->{indentation}->{$method} ||= $defaults{indentation}{$method};
     }
 }
 
@@ -130,11 +130,12 @@ foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
     my $method_level = Log::Any::Adapter::Util::numeric_level($method);
     *{$method} = sub {
         my ( $self, $text ) = @_;
-        my $format_string = "%s" . (" " x $self->indentation->{$method}) . "%s\n";
         return if $method_level > $self->{log_level};
+        my $format_string = "%s" . (" " x $self->indentation->{$method}) . "%s\n";
         my $msg = sprintf($format_string, $self->timestamp(), $text);
         flock($self->{file}, LOCK_EX) if $self->{__has_flock};
         $self->{file}->print($msg);
+        use Data::Printer; p $self;
         flock($self->{file}, LOCK_UN) if $self->{__has_flock};
     }
 }
