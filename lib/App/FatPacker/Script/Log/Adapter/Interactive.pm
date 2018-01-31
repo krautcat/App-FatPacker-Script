@@ -77,7 +77,7 @@ sub init {
             } or do {
                 my $msg = "Unable to use $fh for logging!\n";
                 if ( is_interactive(\*STDERR) ) {
-                    $msg = colored $msg, 'bright_red';
+                    $msg = ANSIColor::colored($msg, 'bright_red');
                 }
                 warn $msg;
             }
