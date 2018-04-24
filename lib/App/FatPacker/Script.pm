@@ -61,7 +61,7 @@ sub parse_options {
     Getopt::Long::Configure("bundling");
 
     # Default values
-    my @dirs = ("lib", "fatlib", "local", "extlib");
+    my @dirs = ("local", "extlib");
     my @proj_dirs = ();
     my (@additional_core, @non_core) = (() , ());
     my $target_version = $];
@@ -80,66 +80,70 @@ sub parse_options {
     };
 
     GetOptions
+        "b|base=s"      => \(my $base = cwd()),
+        
         "d|dir=s@"      => \@dirs,
-        "b|base=s"      => \(my $base = cwd),
+        "use-cache!"    => \(my $cache = 1),
         "f|fatlib-dir=s"
                         => \(my $fatlib_dir = "fatlib"),
         "p|proj-dir=s@" => \@proj_dirs,
+        
         "i|includes=s@" => \@additional_core,
         "n|non-core=s@" => \@non_core,
+        
         "to=s"          => \(my $result_file = "fatpacked.pl"),
-        "h|help"        => sub { pod2usage(1) },
+        
         "o|output=s"    => \(my $output),
         "q|quiet+"      => \(my $quiet = 0),
         "v|verbose+"    => \(my $verbose = 0),
-        "s|strict"      => \(my $strict),
-        "V|version"     => $version_sub,
-        "t|target=s"    => $version_handler,
         "color!"        => \(my $color = 1),
-        "use-cache!"    => \(my $cache = 1),
+        
+        "t|target=s"    => $version_handler,
         "shebang=s"     => \(my $custom_shebang),
+        "s|strict"      => \(my $strict),
         "exclude-strip=s@" => \(my $exclude_strip),
         "no-strip|no-perl-strip" => \(my $no_perl_strip),
+        
+        "V|version"     => $version_sub,
+        "h|help"        => sub { pod2usage(1) },
+        
         or pod2usage(2);
 
     $self->{script} = shift @ARGV or do { 
         warn "Missing scirpt.\n"; pod2usage(2)
     };
     
-    push @{$self->{forced_CORE}}, split( /,/, join(',', @additional_core) );
-    push @{$self->{non_CORE}}, split( /,/, join(',', @non_core) );
-    
     # Directories to search module files, local directories 
     push @{$self->{dir}}, map { rel2abs $_, $base }
                           split( /,/, join(',', @dirs) );
-
     # Use lib directory in base directory if project directory wasn't supplied
     # via command line arguments
     push @{$self->{proj_dir}},
         scalar @proj_dirs
-        ? ( map { rel2abs $_, $base } @proj_dirs )
+        ? ( map { rel2abs $_, $base }
+            split( /,/, join(',', @proj_dirs) ) )
         : ( rel2abs "lib", $base );
     $self->{fatlib_dir} = rel2abs $fatlib_dir, $base;
-
     $self->{use_cache}  = $cache;
+    # Add fatlib directory if use cache
+    if ($self->{use_cache}) {
+        unshift @{$self->{dir}}, $self->{fatlib_dir};
+    }
+    # Concatenate project directories at the beginning of array of directories
+    # to look up modules and then remove duplicates
+    unshift @{$self->{dir}}, @{$self->{proj_dir}};
+    @{$self->{dir}} = uniq @{$self->{dir}};
+
+    push @{$self->{forced_CORE}}, split( /,/, join(',', @additional_core) );
+    push @{$self->{non_CORE}}, split( /,/, join(',', @non_core) );
 
     $self->{result_file} = rel2abs $result_file, $base;
 
     $self->{strict}     = $strict;
     $self->{target}     = $target_version;
     $self->{custom_shebang} = $custom_shebang;
-    $self->{perl_strip} = $no_perl_strip ? undef : Perl::Strip->new;
+    $self->{perl_strip} = $no_perl_strip ? undef : Perl::Strip->new();
     $self->{exclude_strip}  = [ map { qr/$_/ } @{$exclude_strip || []} ];
-
-    # Delete fatlib directory from list of directories if not using cache
-    if (in_ary($self->{fatlib_dir}, $self->{dir}) and !$self->{use_cache}) {
-        $self->{dir} = [ grep { $_ ne $self->{fatlib_dir} } @{$self->{dir}} ];
-    }
-
-    # Concatenate project directories at the beginning of array of directories
-    # to look up modules and then remove duplicates.
-    unshift @{$self->{dir}}, @{$self->{proj_dir}};
-    @{$self->{dir}} = uniq @{$self->{dir}};
 
     # Setting output descriptor. Try to open file supplied from command line.
     # options. If opening failed, show message to user and return to fallback
@@ -149,7 +153,7 @@ sub parse_options {
         eval {
             Log::Any::Adapter->set(
                 '+App::FatPacker::Script::Log::Adapter::File',
-                $output,
+                rel2abs($output, $base),
                 log_level => $verboseness,
                 timestamp => 1);
         } or do {
@@ -195,7 +199,7 @@ sub trace_noncore_dependencies {
         @{$self->{dir}},
         ( $ENV{PERL5LIB} || () );
 
-        my @non_core =
+    my @non_core =
         map { 
             $args{to_packlist}
                 ? module_notation_conv($_, direction => 'to_fname')
@@ -210,7 +214,6 @@ sub trace_noncore_dependencies {
         map {
             chomp($_);
             module_notation_conv($_, direction => 'to_dotted', relative => 0);
-            # s!(/|.pm|\n)!$replace{$1} // ''!egr;
         } qx/$^X @opts/;                                            ## no critic
 
     if (wantarray) {
@@ -219,6 +222,22 @@ sub trace_noncore_dependencies {
         return \@non_core
     } else {
         $self->{__non_core} = \@non_core;
+    }
+}
+
+sub filter_noncore_dependencies {
+    my ($self, $deps) = @_;
+    
+    my @non_core = grep {
+            not Module::CoreList->is_core($_, undef, $self->{target})
+        } @$deps;
+
+    if (wantarray) {
+        return @non_core;
+    } elsif (defined wantarray) {
+        return \@non_core
+    } else {
+        push @{$self->{__non_core}}, @non_core;
     }
 }
 
@@ -623,10 +642,8 @@ sub run {
     # dependencies supplied from command line
     my @non_core_deps = (
         $self->trace_noncore_dependencies(to_packlist => 1),
-        @{$self->{non_CORE}}
+        $self->filter_noncore_dependencies($self->{non_CORE}),
     );
-    # TODO: validate non-core deps
-    # $self->filter_non_core_modules(\@non_core_deps);
 
     # Adding to the list of non-core dependencies core modules which must be
     # included in list of modules for packing
