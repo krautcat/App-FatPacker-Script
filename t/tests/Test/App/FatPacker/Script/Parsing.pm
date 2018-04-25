@@ -164,14 +164,16 @@ sub test_including_modules : Tests(2) {
 
 sub test_result_file : Tests(1) {
     my $test = shift;
+    my $cwd = File::Spec->rel2abs(cwd());
     $test->_parse_args(
             "--base",
                 "xt",
-            "--output",
+            "--to",
                 "stub_fatpacked.pl");
     is(
-        $test->{app_obj}->
-    )
+        $test->{app_obj}->{result_file},
+        File::Spec->catdir($cwd, "xt", "stub_fatpacked.pl")
+    );
 }
 
 sub use_perl_strip : Tests(1) {
@@ -223,7 +225,7 @@ sub logger_adapter_file : Tests(4) {
     );
     is(
         $test->{app_obj}->{logger}->{adapter}->{binmode},
-        ":utf8",
+        "utf8",
         "File should be opened in ':utf8' mode"
     );
 }
