@@ -38,6 +38,7 @@ use Perl::Strip;
 use B qw/perlstring/;
 use Module::CoreList;
 use App::FatPacker;
+use App::FatPacker::Script::Core;
 use App::FatPacker::Script::Utils;
 
 our $VERSION = '0.01';
@@ -109,41 +110,49 @@ sub parse_options {
         
         or pod2usage(2);
 
-    $self->{script} = shift @ARGV or do { 
+    my $script = shift @ARGV or do { 
         warn "Missing scirpt.\n"; pod2usage(2)
     };
     
     # Directories to search module files, local directories 
-    push @{$self->{dir}}, map { rel2abs $_, $base }
-                          split( /,/, join(',', @dirs) );
+    @dirs = map { rel2abs $_, $base }
+                split( /,/, join(',', @dirs) );
     # Use lib directory in base directory if project directory wasn't supplied
     # via command line arguments
-    push @{$self->{proj_dir}},
-        scalar @proj_dirs
+    @proj_dirs = scalar @proj_dirs
         ? ( map { rel2abs $_, $base }
             split( /,/, join(',', @proj_dirs) ) )
         : ( rel2abs "lib", $base );
-    $self->{fatlib_dir} = rel2abs $fatlib_dir, $base;
-    $self->{use_cache}  = $cache;
+    $fatlib_dir = rel2abs $fatlib_dir, $base;
     # Add fatlib directory if use cache
-    if ($self->{use_cache}) {
-        unshift @{$self->{dir}}, $self->{fatlib_dir};
+    if ($cache) {
+        unshift @dirs, $fatlib_dir;
     }
     # Concatenate project directories at the beginning of array of directories
     # to look up modules and then remove duplicates
-    unshift @{$self->{dir}}, @{$self->{proj_dir}};
-    @{$self->{dir}} = uniq @{$self->{dir}};
+    unshift @dirs, @proj_dirs;
+    @dirs = uniq @dirs;
 
-    push @{$self->{forced_CORE}}, split( /,/, join(',', @additional_core) );
-    push @{$self->{non_CORE}}, split( /,/, join(',', @non_core) );
+    $self->{core_obj} = App::FatPacker::Script::Core->new(
+            script      =>  $script,
+            output      =>  rel2abs($result_file, $base),
 
-    $self->{result_file} = rel2abs $result_file, $base;
+            module_dirs =>  \@dirs,
+            proj_dirs   =>  \@proj_dirs,
+            fatlib_dir  =>  $fatlib_dir,
+            use_cache   =>  $cache,
+            
+            modules => {
+                forced_CORE =>  [ split( /,/, join(',', @additional_core) ) ],
+                non_CORE    =>  [ split( /,/, join(',', @non_core) ) ],
+            },
+            target_Perl_version => $target_version,
 
-    $self->{strict}     = $strict;
-    $self->{target}     = $target_version;
-    $self->{custom_shebang} = $custom_shebang;
-    $self->{perl_strip} = $no_perl_strip ? undef : Perl::Strip->new();
-    $self->{exclude_strip}  = [ map { qr/$_/ } @{$exclude_strip || []} ];
+            strict      =>  $strict,
+            custom_shebang  =>  $custom_shebang,
+            perl_strip      =>  $no_perl_strip ? undef : Perl::Strip->new(),
+            exclude_strip   =>  [ map { qr/$_/ } @{$exclude_strip || []} ],
+        );
 
     # Setting output descriptor. Try to open file supplied from command line.
     # options. If opening failed, show message to user and return to fallback
@@ -180,171 +189,6 @@ sub parse_options {
     $self->{verboseness} = $verboseness;
 
     return $self;
-}
-
-sub trace_noncore_dependencies {
-    my ($self, %args) = @_;
-
-    my @opts = ($self->{script});
-    if ($self->{quiet}) {
-        push @opts, '2>/dev/null';
-    }
-    my $trace_opts = '>&STDOUT';
-
-    local $ENV{PERL5OPT} = join ' ',
-        ( $ENV{PERL5OPT} || () ), '-MApp::FatPacker::Trace=' . $trace_opts;
-    local $ENV{PERL5LIB} = join ':',
-        @{$self->{proj_dir}},
-        ( $self->{use_cache} ? $self->{fatlib_dir} : () ),
-        @{$self->{dir}},
-        ( $ENV{PERL5LIB} || () );
-
-    my @non_core =
-        map { 
-            $args{to_packlist}
-                ? module_notation_conv($_, direction => 'to_fname')
-                : $_;
-        }
-        grep {
-            not Module::CoreList->is_core($_, undef, $self->{target})
-        }
-        sort {
-            $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger
-        }
-        map {
-            chomp($_);
-            module_notation_conv($_, direction => 'to_dotted', relative => 0);
-        } qx/$^X @opts/;                                            ## no critic
-
-    if (wantarray) {
-        return @non_core;
-    } elsif (defined wantarray) {
-        return \@non_core
-    } else {
-        $self->{__non_core} = \@non_core;
-    }
-}
-
-sub filter_noncore_dependencies {
-    my ($self, $deps) = @_;
-    
-    my @non_core = grep {
-            not Module::CoreList->is_core($_, undef, $self->{target})
-        } @$deps;
-
-    if (wantarray) {
-        return @non_core;
-    } elsif (defined wantarray) {
-        return \@non_core
-    } else {
-        push @{$self->{__non_core}}, @non_core;
-    }
-}
-
-sub add_forced_core_dependenceies {
-    my ($self, $noncore) = @_;
-    # Check whether added
-    foreach my $forced_core (@{$self->{forced_CORE}}) {
-        if (Module::CoreList->is_core($forced_core, undef, $self->{target})) {
-            push @$noncore, $forced_core;
-        }
-    }
-    if (wantarray) {
-        return (sort {
-                $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger
-            } @$noncore);
-    } elsif (defined wantarray) {
-        return $noncore;
-    } else {
-        return;
-    }
-}
-
-sub filter_non_proj_modules {
-    my ($self, $modules) = @_;
-
-    my $pipe = IO::Pipe->new();
-    my $pid = fork;
-    defined($pid) or die "Can't fork for filtering project modules: $!\n";
-
-    if ($pid) {
-        $pipe->reader();
-        return %{ fd_retrieve($pipe) };
-    } else {
-        local @INC = (
-            @{$self->{proj_dir}},
-            ( $self->{use_cache} ? $self->{fatlib_dir} : () ),
-            @{$self->{dir}}, 
-            @INC
-        );
-        my %non_proj_or_cached;
-        for my $non_core (@$modules) {
-            eval {
-                require $non_core;
-                1;
-            } or do {
-                $self->{logger}->warn("Cannot load $non_core module: $@");
-            };
-            # If use-cache options was set, we consider fatlib directory as part
-            # of project directory so all modules cached by previous executions 
-            # of script will be considered as project modules
-            my @proj_dir = ($self->{use_cache})
-                ? ($self->{fatlib_dir}, @{$self->{proj_dir}})
-                : @{$self->{proj_dir}};
-            if (not grep {$INC{$non_core} =~ catfile($_, $non_core)} @proj_dir)
-            {
-                push @{$non_proj_or_cached{non_proj}}, $non_core;
-            }
-            if ($self->{use_cache}) {
-                if ( $INC{$non_core} =~ catfile($self->{fatlib_dir}, $non_core) )
-                {
-                    push @{$non_proj_or_cached{cached}}, $non_core;
-                }
-            }
-        }
-        $pipe->writer();
-        $pipe->autoflush(1);
-        store_fd({ %non_proj_or_cached }, $pipe);
-        exit 0;
-    }
-}
-
-sub filter_xs_modules {
-    my ($self, $modules) = @_;
-
-    my $pipe = IO::Pipe->new();
-    my $pid = fork;
-    defined($pid) or die "Can't fork for filtering XS modules: $!\n";
-
-    if ($pid) {
-        $pipe->reader();
-        return @{ fd_retrieve($pipe) };
-    } else {
-        use DynaLoader;
-        local @INC = (
-            ( $self->{use_cache} ? $self->{fatlib_dir} : () ),
-            @{$self->{dir}},
-            @INC
-        );
-        my @xsed_modules;
-        for my $module_file (@$modules) {
-            my $module_name = 
-                module_notation_conv($module_file, direction => "to_dotted");
-            eval {
-                require $module_file;
-                1;
-            } or do {
-                $self->{logger}->warn("Failed to load ${module_file}: $@");
-            };
-            if ( grep { $module_name eq $_ } @DynaLoader::dl_modules ) {
-                push @xsed_modules, $module_file;
-            }
-        }
-        $pipe->writer();
-        $pipe->autoflush(1);
-        store_fd(\@xsed_modules, $pipe);
-        exit 0;
-    }
 }
 
 ### Packlisting subroutines
@@ -638,53 +482,52 @@ sub fatpack_code {
 sub run {
     my ($self) = @_;
 
+    $self->{core_obj}
     # Tracing non-core dependencies of packing module and adding non-core
     # dependencies supplied from command line
-    my @non_core_deps = (
-        $self->trace_noncore_dependencies(to_packlist => 1),
-        $self->filter_noncore_dependencies($self->{non_CORE}),
-    );
-
+            ->trace_noncore_dependencies(to_packlist => 1)
+            ->filter_noncore_dependencies()
     # Adding to the list of non-core dependencies core modules which must be
     # included in list of modules for packing
-    $self->add_forced_core_dependenceies(\@non_core_deps);
-
+            ->add_forced_core_dependenceies()
     # Filter non-project module dependencies
-    my %non_proj_deps = $self->filter_non_proj_modules(\@non_core_deps);
-
+            ->filter_non_proj_modules()
     # Filter all xs modules
-    @{$self->{xsed_deps}} = $self->filter_xs_modules($non_proj_deps{non_proj});
+            ->filter_xs_modules();
+
+
+
 
     $self->{logger}->info("--- non-core-deps");
-    $self->{logger}->notice($_) for (@non_core_deps);
+    $self->{logger}->notice($_) for (@{$self->{core_obj}->{_non_core_deps}});
     $self->{logger}->info("--- non-proj-deps");
-    $self->{logger}->notice($_) for (@{$non_proj_deps{non_proj}});
+    $self->{logger}->notice($_) for (@{$self->{core_obj}->{_non_proj_or_cached}->{non_proj}});
     $self->{logger}->info("--- cached-deps");
-    $self->{logger}->notice($_) for (@{$non_proj_deps{cached}});
+    $self->{logger}->notice($_) for (@{$self->{core_obj}->{_non_proj_or_cached}->{cached}});
     $self->{logger}->info("--- xsed-deps");
-    $self->{logger}->notice($_) for (@{$self->{xsed_deps}});
+    $self->{logger}->notice($_) for (@{$self->{core_obj}->{_xsed}});
 
     # Getting packlists for all non-project dependencies
-    my @packlists = $self->packlist($non_proj_deps{non_proj});
+    my @packlists = $self->packlist($self->{core_obj}->{_non_proj_or_cached}->{non_proj});
 
     $self->{logger}->info("--- packlists");
     $self->{logger}->notice($_) for (@packlists);
 
-    make_path $self->{fatlib_dir};
+    make_path $self->{core_obj}->{fatlib_dir};
 
-    $self->{logger}->info("Fatlib directory: $self->{fatlib_dir}");
+    $self->{logger}->info("Fatlib directory: $self->{core_obj}->{fatlib_dir}");
 
     # All packlists files move to tree into fatlib directory
-    $self->packlists_to_tree($self->{fatlib_dir}, \@packlists);
+    $self->packlists_to_tree($self->{core_obj}->{fatlib_dir}, \@packlists);
 
     my $fatpacked = $self->fatpack_file();
-    my $out_file = IO::File->new($self->{result_file}, ">");
+    my $out_file = IO::File->new($self->{core_obj}->{output_file}, ">");
     die "Cannot open '$self->{result_file}': $!\n" unless defined $out_file;
     print {$out_file} $fatpacked;
     $out_file->close();
     
-    my $mode = (stat $self->{script})[2];
-    chmod $mode, $self->{result_file};
+    my $mode = (stat $self->{core_obj}->{script})[2];
+    chmod $mode, $self->{core_obj}->{output_file};
     $self->{logger}->notice("Successfully created $self->{result_file}");
 }
 
