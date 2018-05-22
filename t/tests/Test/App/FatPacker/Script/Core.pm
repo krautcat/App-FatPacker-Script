@@ -4,6 +4,9 @@ use strict;
 use warnings;
 use diagnostics;
 
+use Cwd;
+use File::Spec;
+
 use Test::More;
 use base 'Test::Class';
 
@@ -53,7 +56,25 @@ sub add_existing_filter : Tests(2) {
 }
 
 sub inc_dirs_return_value : Test(1) {
-    
+    my $test = shift;
+    my $class = $test->class();
+    my $test_obj = undef;
+
+    $test_obj = $class->new(dirs => [ "t/data" ],  
+                            proj_dirs => [ "t/data" ],
+                            script => "t/data/bin/stub.pl");
+
+    use DDP; p $test_obj;
+    is_deeply(
+        [ 
+            $test_obj->inc_dirs()
+        ],
+        [
+            File::Spec->rel2abs("t/data", cwd()),
+            @INC
+        ],
+        "Include dirs should contain only 't/data' and INC dirs"
+    );    
 }
 
 1;

@@ -9,6 +9,7 @@ use Log::Any ();
 
 use List::Util qw/uniq/; 
 
+use Cwd ();
 use File::Spec::Functions qw/
     rel2abs
     /;
@@ -121,10 +122,6 @@ sub _initialize {
     my %params = @_;
 
     foreach my $pair (
-            ['output_file', 'output'],
-            ['dir', 'module_dirs'],
-            ['proj_dir', 'proj_dirs'],
-            ['fatlib_dir', 'fatlib_dir'],
             ['use_cache', 'use_cache'],
             ['forced_CORE_modules', 'modules', 'forced_CORE'],
             ['non_CORE_modules', 'modules', 'non_CORE'],
@@ -143,6 +140,26 @@ sub _initialize {
             $self->{$pair->[0]} = exists $params{$pair->[1]}{$pair->[2]}
                 ? $params{$pair->[1]}{$pair->[2]} : $self->{$pair->[0]};
         }
+    }
+
+    foreach my $dirs_pair (
+            ['dir', 'module_dirs'],
+            ['proj_dir', 'proj_dirs'],
+        )
+    {
+        $self->{$dirs_pair->[0]} = exists $params{$dirs_pair->[1]}
+            ? [ map { rel2abs($_, Cwd::cwd()) } @{$params{$dirs_pair->[1]}} ]
+            : $self->{$dirs_pair->[0]};                
+    }
+
+    foreach my $dir_pair (
+            ['output_file', 'output'],
+            ['fatlib_dir', 'fatlib_dir'],
+        )
+    {
+        $self->{$dir_pair->[0]} = exists $params{$dir_pair->[1]}
+            ? rel2abs($params{$dir_pair->[1]}, Cwd::cwd())
+            : $self->{$dir_pair->[0]};
     }
 
     $self->{script} = $params{script} || Carp::croak("Missing script");
@@ -177,7 +194,7 @@ sub inc_dirs {
     my %params = @_;
     $params{proj_dir} = exists $params{proj_dir} ? $params{proj_dir} : 1;
 
-    return (
+    return uniq (
         ( $params{proj_dir} ? @{$self->{proj_dir}} : () ),
         ( $self->{use_cache} ? $self->{fatlib_dir} : () ),
         @{$self->{dir}}, 
