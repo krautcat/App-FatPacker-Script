@@ -227,7 +227,7 @@ sub packlists_containing {
     } else {
         # Exclude paths controlled by our project
         local @INC = (
-            exclude_ary($self->{dir}, [@{$self->{proj_dir}}, $self->{fatlib_dir}]),
+            exclude_ary($self->{core_obj}->{dir}, [@{$self->{core_obj}->{proj_dir}}, $self->{core_obj}->{fatlib_dir}]),
             @INC
         );
         my @loadable = ();
@@ -264,7 +264,7 @@ sub packlists_containing {
         # with OS-specific file notation (delimiters and '.pm' extension).
         my %found;
         @found{map { 
-                $pack_reverse_internals{rel2abs($INC{$_}, $self->{base})} || "" 
+                $pack_reverse_internals{rel2abs($INC{$_}, $self->{core_obj}->{base})} || "" 
             } @loadable} = @loadable;
         delete $found{""};
         $self->{logger}->info(">>>>> loadable");
@@ -272,7 +272,7 @@ sub packlists_containing {
         $self->{logger}->info(">>>>> orphans loadable");
         $self->{logger}->notice($_) for grep {
                 not defined $pack_reverse_internals{
-                    rel2abs($INC{$_}, $self->{base})
+                    rel2abs($INC{$_}, $self->{core_obj}->{base})
                 }
             } @loadable;
         $self->{logger}->info(">>>>> packlists");
@@ -285,7 +285,7 @@ sub packlists_containing {
                 packlists => \%found,
                 orphaned => [ grep {
                         not defined $pack_reverse_internals{
-                            rel2abs($INC{$_}, $self->{base})
+                            rel2abs($INC{$_}, $self->{core_obj}->{base})
                         }
                     } @loadable ],
             }, $pipe);
@@ -295,7 +295,7 @@ sub packlists_containing {
 
 sub packlists_to_tree {
     my ($self, $where, $packlists, $modules) = @_;
-    if (not $self->{use_cache}) {
+    if (not $self->{core_obj}->{use_cache}) {
         remove_tree $where;
         make_path $where;
     }
@@ -339,8 +339,8 @@ sub fatpack_file {
     my $shebang;
     my $script_code;
 
-    if (-r $self->{script}) {
-        ($shebang, $script_code) = $self->fatpack_load_main_script($self->{script});
+    if (-r $self->{core_obj}->{script}) {
+        ($shebang, $script_code) = $self->fatpack_load_main_script($self->{core_obj}->{script});
     }
 
     my @dirs = $self->fatpack_collect_dirs();
@@ -355,14 +355,14 @@ sub fatpack_file {
 sub fatpack_collect_dirs {
     my ($self) = @_;
     return grep -d, map {
-            rel2abs $_, $self->{base}
-        } ($self->{fatlib_dir}, @{$self->{proj_dir}});
+            rel2abs $_, $self->{core_obj}->{base}
+        } ($self->{core_obj}->{fatlib_dir}, @{$self->{core_obj}->{proj_dir}});
 }
 
 sub fatpack_collect_files {
     my ($self, $dir, $files) = @_;
  
-    my $absolute_dir = rel2abs $dir, $self->{base};
+    my $absolute_dir = rel2abs $dir, $self->{core_obj}->{base};
     # When $dir is not an archlib,
     # and we are about to search $dir/archlib, skip it!
     # because $dir/archlib itself will be searched another time.
@@ -377,7 +377,7 @@ sub fatpack_collect_files {
             }
         }
         my $original = $_;
-        my $absolute = rel2abs $original, $self->{base};
+        my $absolute = rel2abs $original, $self->{core_obj}->{base};
         return if $absolute =~ $skip_dir;
         my $relative = File::Spec::Unix->abs2rel($absolute, $absolute_dir);
         if (not $_ =~ /\.(?:pm|ix|al|pl)$/) {
@@ -489,7 +489,7 @@ sub run {
             ->filter_noncore_dependencies()
     # Adding to the list of non-core dependencies core modules which must be
     # included in list of modules for packing
-            ->add_forced_core_dependenceies()
+            ->add_forced_core_dependencies()
     # Filter non-project module dependencies
             ->filter_non_proj_modules()
     # Filter all xs modules
@@ -528,7 +528,7 @@ sub run {
     
     my $mode = (stat $self->{core_obj}->{script})[2];
     chmod $mode, $self->{core_obj}->{output_file};
-    $self->{logger}->notice("Successfully created $self->{result_file}");
+    $self->{logger}->notice("Successfully created $self->{core_obj}->{output_file}");
 }
 
 sub build_dir {

@@ -3,8 +3,16 @@
 use strict;
 use warnings;
 
-use Local::Test;
+use Getopt::Long qw/GetOptions/;
+
 use Term::Spinner::Color;
+
+use Local::Test;
+
+
+GetOptions
+    "foo!"  => \(my $foo = 0),
+    "bar=s" => \(my $bar);
 
 my $spinner = Term::Spinner::Color->new();
 

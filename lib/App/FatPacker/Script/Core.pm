@@ -11,23 +11,12 @@ use List::Util qw/uniq/;
 
 use Cwd ();
 use File::Spec::Functions qw/
+    catdir
     rel2abs
     /;
 
 use App::FatPacker::Script::Utils;
 use App::FatPacker::Script::Filters ();
-
-# sub AUTOCAN {
-#     my ($self, $method) = @_;
-#     if ($method =~ m/^filter_\w*/) {
-#         for my $f (@{$self->{filters}}) {
-#             if ($f->can($method)) {
-#                 return \&{$self->$f->$method};
-#             }
-#         }
-#     }
-#     return undef;
-# }
 
 sub AUTOLOAD {
     my ($inv) = @_;
@@ -39,27 +28,32 @@ sub AUTOLOAD {
         Carp::croak "Undefined subroutine &${package}::$method called"
     }
     return if $method eq 'DESTROY';
-    
+
     my $sub = undef;
+    my $filter_obj = undef;
     if ($method =~ m/^filter_(.+)*/) {
         for my $f (@{$inv->{_filters}}) {
             if ($f->can($method)) {
                 $sub = $f->can($method);
+                $filter_obj = $f;
             }
         }
     }
-
     unless ( defined $sub and do { local $@; eval { $sub = \&$sub; 1 } } ) {
         Carp::croak qq[Can't locate object method "$method"] .
                     qq[via package "$package"]
     }
     # allow overloads and blessed subrefs; assign ref so overload is only invoked once
     {
-        require Sub::Util;
         no strict 'refs';
-        *{"${package}::$method"} = Sub::Util::set_subname("${package}::$method", $sub);
+        # *{"${package}::$method"} = Sub::Util::set_subname("${package}::$method", $sub);
+        *{"${package}::$method"} = sub {
+            my $self = shift;
+            return $filter_obj->$method(@_);
+        }
     }
-    goto &$sub;
+    my $result_sub = "${package}::$method";
+    goto &$result_sub;
 }
 
 sub can {
@@ -67,10 +61,12 @@ sub can {
     my $sub = $package->SUPER::can($method);
     return $sub if defined $sub;
 
+    my $filter_obj = undef;
     if ($method =~ m/^filter_(.+)$/) {
         for my $f (@{$package->{_filters}}) {
             if ($f->can($method)) {
                 $sub = $f->can($method);
+                $filter_obj = $f;
             }
         }
     }
@@ -82,9 +78,13 @@ sub can {
     {
         require Sub::Util;
         no strict 'refs';
-        *{"${package}::$method"} = Sub::Util::set_subname("${package}::$method", $sub);
+        *{"${package}::$method"} = sub {
+            my $self = shift;
+            return $filter_obj->$method(@_);
+        }
     }
-    return $sub;
+    my $result_sub = "${package}::$method";
+    return $result_sub;
 }
 
 sub new {
@@ -109,7 +109,7 @@ sub _defaultize {
 
     $self->{forced_CORE_modules} = [];
     $self->{non_CORE_modules} = [];
-    $self->{target_version} = $^V;
+    $self->{target_version} = $^V->numify();
 
     $self->{strict} = 0;
     $self->{custom_shebang} = undef;
@@ -125,7 +125,7 @@ sub _initialize {
             ['use_cache', 'use_cache'],
             ['forced_CORE_modules', 'modules', 'forced_CORE'],
             ['non_CORE_modules', 'modules', 'non_CORE'],
-            ['targer_version', 'target_Perl_version'],
+            ['target_version', 'target_Perl_version'],
             ['strict', 'strict'],
             ['custom_shebang', 'custom_shebang'],
             ['perl_strip', 'perl_strip'],
@@ -142,15 +142,16 @@ sub _initialize {
         }
     }
 
-    foreach my $dirs_pair (
-            ['dir', 'module_dirs'],
-            ['proj_dir', 'proj_dirs'],
-        )
-    {
-        $self->{$dirs_pair->[0]} = exists $params{$dirs_pair->[1]}
-            ? [ map { rel2abs($_, Cwd::cwd()) } @{$params{$dirs_pair->[1]}} ]
-            : $self->{$dirs_pair->[0]};                
-    }
+    $self->{dir} = exists $params{module_dirs}
+        ? [ map { rel2abs($_) } @{$params{module_dirs}} ]
+        : $self->{dir};
+
+    # Concatenate 'lib' to path if and only if directory isn't absolute
+    $self->{proj_dir} = exists $params{proj_dirs}
+        ? [ map {
+                    rel2abs($_) eq $_ ? $_ : catdir(rel2abs($_), "lib")
+                } @{$params{proj_dirs}} ]
+        : $self->{proj_dir}; 
 
     foreach my $dir_pair (
             ['output_file', 'output'],
@@ -158,7 +159,7 @@ sub _initialize {
         )
     {
         $self->{$dir_pair->[0]} = exists $params{$dir_pair->[1]}
-            ? rel2abs($params{$dir_pair->[1]}, Cwd::cwd())
+            ? rel2abs($params{$dir_pair->[1]})
             : $self->{$dir_pair->[0]};
     }
 
@@ -226,7 +227,9 @@ sub trace_noncore_dependencies {
                 : $_;
         }
         grep {
-            not Module::CoreList->is_core($_, undef, $self->{target});
+            not Module::CoreList->is_core($_, undef, $self->{target_version})
+            or Module::CoreList->is_deprecated($_, $^V->numify())
+            or defined Module::CoreList->removed_from($_);
         }
         sort {
             $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger;
@@ -238,16 +241,13 @@ sub trace_noncore_dependencies {
 
     if (wantarray()) {
         return @non_core;
-    } 
-    $self->{_non_core_deps} = \@non_core;
-    if (defined wantarray()) {
-        return $self;
     } else {
-        return;
+        $self->{_non_core_deps} = \@non_core;
+        return $self;
     }
 }
 
-sub add_forced_core_dependenceies {
+sub add_forced_core_dependencies {
     my ($self, $noncore) = @_;
 
     if (not defined $noncore) {
@@ -256,7 +256,7 @@ sub add_forced_core_dependenceies {
 
     # Check whether added
     foreach my $forced_core (@{$self->{forced_CORE_modules}}) {
-        if (Module::CoreList->is_core($forced_core, undef, $self->{target})) {
+        if (Module::CoreList->is_core($forced_core, undef, $self->{target_version})) {
             push @$noncore, $forced_core;
         }
     }
@@ -264,10 +264,8 @@ sub add_forced_core_dependenceies {
         return (sort {
                 $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger
             } @$noncore);
-    } elsif (defined wantarray()) {
-        return $self;
     } else {
-        return;
+        return $self;
     }
 }
 

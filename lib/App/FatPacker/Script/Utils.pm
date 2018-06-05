@@ -31,8 +31,8 @@ sub module_notation_conv {
     my ($namestring, %args) = @_;
     my $direction = 1;
     if (exists $args{direction}) {
-        if ($args{direction} eq 'to_dotted' or
-            $args{direction} eq 'to_fname'      )
+        if ($args{direction} eq 'to_dotted'
+            or $args{direction} eq 'to_fname')
         {
             $direction = $args{direction} eq 'to_dotted' ? 1 : 0;
         }

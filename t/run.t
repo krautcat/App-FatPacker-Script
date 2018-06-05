@@ -8,5 +8,6 @@ use Test::Class;
 use Test::App::FatPacker::Script;
 use Test::App::FatPacker::Script::Parsing;
 use Test::App::FatPacker::Script::Core;
+use Test::App::FatPacker::Script::Filters;
 
 Test::Class->runtests;
