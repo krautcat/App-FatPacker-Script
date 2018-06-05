@@ -36,8 +36,21 @@ my %defaults = (
         critical   => 'bold red',
         error      => 'red',
         warning    => 'yellow',
+        info       => 'green',
+        notice     => 'green', 
         debug      => 'cyan',
         trace      => 'blue',
+    },
+    indentation => {
+        emergency  => 0,
+        alert      => 0,
+        critical   => 0,
+        error      => 0,
+        warning    => 0,
+        info       => 2,
+        notice     => 2,
+        debug      => 4,
+        trace      => 4,
     },
 );
 
@@ -77,7 +90,7 @@ sub init {
             } or do {
                 my $msg = "Unable to use $fh for logging!\n";
                 if ( is_interactive(\*STDERR) ) {
-                    $msg = colored $msg, 'bright_red';
+                    $msg = ANSIColor::colored($msg, 'bright_red');
                 }
                 warn $msg;
             }
@@ -105,12 +118,16 @@ sub init {
     foreach my $lvl (keys %{$defaults{colors}}) {
        $self->{colors}->{$lvl} ||= $defaults{colors}{$lvl};
     }
+
+    foreach my $lvl (keys %{$defaults{indentation}}) {
+        $self->{indentation}->{$lvl} //= $defaults{indentation}{$lvl};
+    }
 }
 
 sub colored {
     my ($self, $str, $lvl) = @_;
     return $self->{colored}
-        ? ANSIColor::colored($str, $self->{colors}->{$lvl})
+        ? Term::ANSIColor::colored($str, $self->{colors}->{$lvl})
         : $str;
 }
 
@@ -119,10 +136,10 @@ foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
     no strict 'refs';
     my $method_level = Log::Any::Adapter::Util::numeric_level($method);
     *{$method} = sub {
-        my ( $self, $text ) = @_;
-        my $format_string = (" " x $self->indentation->{$method}) . "%s\n";
+        my ($self, $text) = @_;
+        my $format_string = (" " x $self->{indentation}->{$method}) . "%s\n";
         return if $method_level > $self->{log_level};
-        my $msg = sprintf( $format_string, colored($text, $method) );
+        my $msg = sprintf( $format_string, $self->colored($text, $method) );
         print { $self->{fh} } $msg;
     }
 }

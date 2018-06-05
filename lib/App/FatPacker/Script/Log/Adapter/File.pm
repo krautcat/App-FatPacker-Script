@@ -63,7 +63,7 @@ sub init {
     my %open_modes = ();
     foreach my $m (['<', 'r'], ['>', 'w', 'write'], ['>>', 'a', 'append'],
         ['+<', 'r+'], ['+>', 'w+'], ['+>>', 'a+']) {
-        $open_modes{$m->[0]} = 1;
+        $open_modes{$m->[0]} = $m->[0];
         @open_modes_aliases{@$m[1 .. $#$m]} = ($m->[0]) x (scalar(@$m) - 1);
     }
 
@@ -89,7 +89,7 @@ sub init {
     my $mode = (exists($self->{mode}) and $self->{mode} ne '')
         ? $self->{mode}
         : '>';
-    if ($open_modes{$mode} and $mode ne '<') {
+    if (exists $open_modes{$mode} and $mode ne '<') {
         $self->{mode} = $open_modes{$mode};
     } elsif (exists $open_modes_aliases{$mode} and $open_modes_aliases{$mode} ne '<') {
         $self->{mode} = $open_modes_aliases{$mode};

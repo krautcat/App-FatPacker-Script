@@ -22,7 +22,7 @@ use File::Find qw/find/;
 use File::Copy qw/copy/;
 use File::Path qw/make_path remove_tree/;
 use File::Spec::Functions qw/
-    catdir catpath
+    catdir catpath catfile
     splitdir splitpath
     rel2abs abs2rel
     file_name_is_absolute
@@ -35,10 +35,20 @@ use Log::Any;
 use Log::Any::Adapter;
 
 use Perl::Strip;
+use B qw/perlstring/;
 use Module::CoreList;
 use App::FatPacker;
+use App::FatPacker::Script::Core;
+use App::FatPacker::Script::Utils;
 
 our $VERSION = '0.01';
+
+our $IGNORE_FILE = [
+    qr/\.pod$/,
+    qr/\.packlist$/,
+    qr/MYMETA\.json$/,
+    qr/install\.json$/,
+];
 
 sub new {
     my $class = shift;
@@ -52,7 +62,7 @@ sub parse_options {
     Getopt::Long::Configure("bundling");
 
     # Default values
-    my @dirs = ("lib", "fatlib", "local", "extlib");
+    my @dirs = ("local", "extlib");
     my @proj_dirs = ();
     my (@additional_core, @non_core) = (() , ());
     my $target_version = $];
@@ -66,54 +76,83 @@ sub parse_options {
             : $target_version;
     };
 
+    my $version_sub = sub {
+        printf "%s %s\n", __PACKAGE__, __PACKAGE__->VERSION; exit 
+    };
+
     GetOptions
+        "b|base=s"      => \(my $base = cwd()),
+        
         "d|dir=s@"      => \@dirs,
-        "b|base=s"      => \(my $base = cwd),
+        "use-cache!"    => \(my $cache = 1),
         "f|fatlib-dir=s"
                         => \(my $fatlib_dir = "fatlib"),
         "p|proj-dir=s@" => \@proj_dirs,
+        
         "i|includes=s@" => \@additional_core,
         "n|non-core=s@" => \@non_core,
-        "h|help"        => sub { pod2usage(1) },
+        
+        "to=s"          => \(my $result_file = "fatpacked.pl"),
+        
         "o|output=s"    => \(my $output),
         "q|quiet+"      => \(my $quiet = 0),
         "v|verbose+"    => \(my $verbose = 0),
-        "s|strict"      => \(my $strict),
-        "V|version"     => sub { printf "%s %s\n", __PACKAGE__, __PACKAGE__->VERSION; exit },
-        "t|target=s"    => $version_handler,
         "color!"        => \(my $color = 1),
-        "use-cache!"    => \(my $cache = 1),
+        
+        "t|target=s"    => $version_handler,
         "shebang=s"     => \(my $custom_shebang),
+        "s|strict"      => \(my $strict),
         "exclude-strip=s@" => \(my $exclude_strip),
         "no-strip|no-perl-strip" => \(my $no_perl_strip),
+        
+        "V|version"     => $version_sub,
+        "h|help"        => sub { pod2usage(1) },
+        
         or pod2usage(2);
 
-    $self->{script}     = shift @ARGV or do { warn "Missing scirpt.\n"; pod2usage(2) };
-    push @{$self->{dir}}, map { rel2abs $_, $base }
-                          split( /,/, join(',', @dirs) );
-    push @{$self->{forced_CORE}}, split( /,/, join(',', @additional_core) );
-    push @{$self->{non_CORE}}, split( /,/, join(',', @non_core) );
-    push @{$self->{proj_dir}},
-        scalar @proj_dirs
-        ? ( map { rel2abs $_, $base } @proj_dirs )
+    my $script = shift @ARGV or do { 
+        warn "Missing scirpt.\n"; pod2usage(2)
+    };
+    
+    # Directories to search module files, local directories 
+    @dirs = map { rel2abs $_, $base }
+                split( /,/, join(',', @dirs) );
+    # Use lib directory in base directory if project directory wasn't supplied
+    # via command line arguments
+    @proj_dirs = scalar @proj_dirs
+        ? ( map { rel2abs $_, $base }
+            split( /,/, join(',', @proj_dirs) ) )
         : ( rel2abs "lib", $base );
-    $self->{fatlib_dir} = rel2abs $fatlib_dir, $base;
-    $self->{strict}     = $strict;
-    $self->{target}     = $target_version;
-    $self->{perl_strip} = $no_perl_strip ? undef : Perl::Strip->new;
-    $self->{custom_shebang} = $custom_shebang;
-    $self->{exclude_strip}  = [ map { qr/$_/ } @{$exclude_strip || []} ];
-    $self->{exclude}    = [];
-    $self->{use_cache}  = $cache;
-
-    if (in_ary($self->{fatlib_dir}, $self->{dir}) and !$self->{use_cache}) {
-        $self->{dir} = [ grep { $_ ne $self->{fatlib_dir} } @{$self->{dir}} ];
+    $fatlib_dir = rel2abs $fatlib_dir, $base;
+    # Add fatlib directory if use cache
+    if ($cache) {
+        unshift @dirs, $fatlib_dir;
     }
-
     # Concatenate project directories at the beginning of array of directories
-    # to look up modules and then remove duplicates.
-    unshift @{$self->{dir}}, @{$self->{proj_dir}};
-    @{$self->{dir}} = uniq @{$self->{dir}};
+    # to look up modules and then remove duplicates
+    unshift @dirs, @proj_dirs;
+    @dirs = uniq @dirs;
+
+    $self->{core_obj} = App::FatPacker::Script::Core->new(
+            script      =>  $script,
+            output      =>  rel2abs($result_file, $base),
+
+            module_dirs =>  \@dirs,
+            proj_dirs   =>  \@proj_dirs,
+            fatlib_dir  =>  $fatlib_dir,
+            use_cache   =>  $cache,
+            
+            modules => {
+                forced_CORE =>  [ split( /,/, join(',', @additional_core) ) ],
+                non_CORE    =>  [ split( /,/, join(',', @non_core) ) ],
+            },
+            target_Perl_version => $target_version,
+
+            strict      =>  $strict,
+            custom_shebang  =>  $custom_shebang,
+            perl_strip      =>  $no_perl_strip ? undef : Perl::Strip->new(),
+            exclude_strip   =>  [ map { qr/$_/ } @{$exclude_strip || []} ],
+        );
 
     # Setting output descriptor. Try to open file supplied from command line.
     # options. If opening failed, show message to user and return to fallback
@@ -121,17 +160,29 @@ sub parse_options {
     my $verboseness = $verbose - $quiet;
     if (defined $output and $output ne '') {
         eval {
-            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::File', $output, log_level => $verboseness, timestamp => 1);
+            Log::Any::Adapter->set(
+                '+App::FatPacker::Script::Log::Adapter::File',
+                rel2abs($output, $base),
+                log_level => $verboseness,
+                timestamp => 1);
         } or do {
             my $msg = "Can't open $output for logging! Reason: $@";
             if ( is_interactive(\*STDERR) ) {
                 $msg = colored $msg, 'bright_red';
             }
             warn $msg;
-            Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::Interactive', log_level => $verboseness, colored => $color);
+            Log::Any::Adapter->set(
+                '+App::FatPacker::Script::Log::Adapter::Interactive',
+                log_level => $verboseness,
+                colored => $color);
         }
     } else {
-        Log::Any::Adapter->set('+App::FatPacker::Script::Log::Adapter::Interactive', log_level => $verboseness, colored => $color);
+        Log::Any::Adapter->set(
+            '+App::FatPacker::Script::Log::Adapter::Interactive',
+            log_level => $verboseness,
+            colored => $color,
+            indentation => { info => 0 },
+            colors => { notice => 'white' });
     }
     
     $self->{logger} = Log::Any->get_logger();
@@ -140,113 +191,26 @@ sub parse_options {
     return $self;
 }
 
-sub trace_noncore_dependencies {
-    my ($self, %args) = @_;
-
-    my @opts = ($self->{script});
-    if ($self->{quiet}) {
-        push @opts, '2>/dev/null';
-    }
-    my $trace_opts = '>&STDOUT';
-
-    local $ENV{PERL5OPT} = join ' ',
-        ( $ENV{PERL5OPT} || () ), '-MApp::FatPacker::Trace=' . $trace_opts;
-    local $ENV{PERL5LIB} = join ':',
-        @{$self->{dir}}, ( $ENV{PERL5LIB} || () );
-
-    my %replace = (
-        '/'   => '::',
-        '.pm' => '',
-        '\n'  => '',
-    );
-    return
-        map { $args{to_packlist} ? s!::!/!gr . ".pm" : $_ }
-        grep { not Module::CoreList->is_core($_, undef, $self->{target}) }
-        sort { $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger }
-        map { s!(/|.pm|\n)!$replace{$1} // ''!egr } qx/$^X @opts/;   ## no critic
-}
-
-sub filter_non_proj_modules {
-    my ($self, $modules) = @_;
-
-    my $pid = open(my $pipe, "-|");
-    defined($pid) or die "Can't fork for filtering project modules: $!\n";
-
-    if ($pid) {
-        my @child_output = (<$pipe>);
-        chomp @child_output;
-        return @child_output;
-    } else {
-        local @INC = (@{$self->{dir}}, @INC);
-        for my $non_core (@$modules) {
-            eval {
-                require $non_core;
-                1;
-            } or do {
-                $self->{logger}->warn("Cannot load $non_core module: $@");
-            };
-            if ( not grep {
-                    $INC{$non_core} =~ m!$_/$non_core!
-                } @{$self->{dir}} )
-            {
-                say $non_core;
-            }
-        }
-        exit 0;
-    }
-}
-
-sub filter_xs_modules {
-    my ($self, $modules) = @_;
-
-    my $pid = open(my $pipe_dyna, "-|");
-    defined($pid) or die "Can't fork for filtering XS modules: $!\n";
-
-    if ($pid) {
-        my @child_output = (<$pipe_dyna>);
-        chomp @child_output;
-        return @child_output;
-    } else {
-        use DynaLoader;
-        local @INC = (@{$self->{dir}}, @INC);
-        for my $module_file (@$modules) {
-            my $module_name = $module_file =~ s!/!::!gr =~ s!.pm$!!r;
-            eval {
-                require $module_file;
-                1;
-            } or do {
-                $self->{logger}->warn("Failed to load ${module_file}: $@");
-            };
-            if ( grep { $module_name eq $_ } @DynaLoader::dl_modules ) {
-                say $module_file;
-            }
-        }
-        exit 0;
-    }
-}
-
-sub add_forced_core_dependenceies {
-    my ($self, $noncore) = @_;
-    push @$noncore, @{$self->{forced_CORE}};
-    if (wantarray) {
-        return (sort {
-                $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger
-            } @$noncore);
-    } elsif (defined wantarray) {
-        return $noncore;
-    } else {
-        return;
-    }
-}
+### Packlisting subroutines
 
 sub packlist {
     my ($self, $deps) = @_;
     my %h = $self->packlists_containing($deps);
     $self->{logger}->info(">>>>> non-XS orphans");
-    $self->{logger}->info($_) for grep { my $m = $_; not grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
+    $self->{logger}->info($_) for grep {
+            my $m = $_;
+            not grep {
+                    $_ eq $m 
+                } @{$self->{xsed_deps}}
+        } @{$h{orphaned}};
     $self->{logger}->info(">>>>> XS orphans");
-    $self->{logger}->info($_) for grep { my $m = $_; grep { $_ eq $m } @{$self->{xsed_deps}} } @{$h{orphaned}};
-    return ( keys %{$h{loadable}} );
+    $self->{logger}->info($_) for grep {
+            my $m = $_;
+            grep { 
+                    $_ eq $m 
+                } @{$self->{xsed_deps}}
+        } @{$h{orphaned}};
+    return ( keys %{$h{packlists}} );
 }
 
 sub packlists_containing {
@@ -262,14 +226,18 @@ sub packlists_containing {
         return %{ fd_retrieve($pipe) };
     } else {
         # Exclude paths controlled by our project
-        local @INC = (exclude_ary($self->{dir}, $self->{proj_dir}) , @INC);
+        local @INC = (
+            exclude_ary($self->{core_obj}->{dir}, [@{$self->{core_obj}->{proj_dir}}, $self->{core_obj}->{fatlib_dir}]),
+            @INC
+        );
         my @loadable = ();
         for my $module (@$module_files) {
             eval {
                 require $module;
                 1;
             } or do {
-                $self->{logger}->warn("Failed to load ${module}: $@. Make sure you're not missing a packlist as a result!");
+                $self->{logger}->warn("Failed to load ${module}: $@. "
+                    ."Make sure you're not missing a packlist as a result!");
                 next;
             };
             push @loadable, $module;
@@ -285,7 +253,9 @@ sub packlists_containing {
             no_chdir => 1,
             wanted => sub {
                 return unless m![\\/]\.packlist$! && -f $_;
-                $pack_reverse_internals{$_} = $File::Find::name for lines_of($File::Find::name);
+                foreach my $line (lines_of($File::Find::name)) {
+                    $pack_reverse_internals{$line} = $File::Find::name
+                }
             },
         }, @pack_dirs);
         # Keys of that hash are files listed in packlists responsible for our
@@ -293,21 +263,31 @@ sub packlists_containing {
         # in that packlist will be the key of %found hash. Value is module file
         # with OS-specific file notation (delimiters and '.pm' extension).
         my %found;
-        @found{map { $pack_reverse_internals{Cwd::abs_path($INC{$_})} || "" } @loadable} = @loadable;
+        @found{map { 
+                $pack_reverse_internals{rel2abs($INC{$_}, $self->{core_obj}->{base})} || "" 
+            } @loadable} = @loadable;
         delete $found{""};
         $self->{logger}->info(">>>>> loadable");
-        $self->{logger}->info($_) for @loadable;
+        $self->{logger}->notice($_) for @loadable;
         $self->{logger}->info(">>>>> orphans loadable");
-        $self->{logger}->info($_) for grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable;
+        $self->{logger}->notice($_) for grep {
+                not defined $pack_reverse_internals{
+                    rel2abs($INC{$_}, $self->{core_obj}->{base})
+                }
+            } @loadable;
         $self->{logger}->info(">>>>> packlists");
-        $self->{logger}->info($_) for keys %found;
+        $self->{logger}->notice($_) for keys %found;
         $self->{logger}->info(">>>>> modules with packlists");
-        $self->{logger}->info(module_notation_conv($_)) for values %found;
+        $self->{logger}->notice(module_notation_conv($_)) for values %found;
         $pipe->writer();
         $pipe->autoflush(1);
         store_fd({
                 packlists => \%found,
-                orphaned => [ grep { not defined $pack_reverse_internals{Cwd::abs_path($INC{$_})} } @loadable ],
+                orphaned => [ grep {
+                        not defined $pack_reverse_internals{
+                            rel2abs($INC{$_}, $self->{core_obj}->{base})
+                        }
+                    } @loadable ],
             }, $pipe);
         exit 0;
     }
@@ -315,7 +295,7 @@ sub packlists_containing {
 
 sub packlists_to_tree {
     my ($self, $where, $packlists, $modules) = @_;
-    if (not $self->{use_cache}) {
+    if (not $self->{core_obj}->{use_cache}) {
         remove_tree $where;
         make_path $where;
     }
@@ -352,116 +332,203 @@ sub packlists_to_tree {
     }
 }
 
+### Fatpacking subroutines
+
 sub fatpack_file {
-    my ($self, $filename) = @_;
+    my ($self) = @_;
     my $shebang;
     my $script_code;
 
-    if (defined $filename and -r $filename) {
-        ($shebang, $script_code) = $self->load_main_script($filename);
+    if (-r $self->{core_obj}->{script}) {
+        ($shebang, $script_code) = $self->fatpack_load_main_script($self->{core_obj}->{script});
     }
 
     my @dirs = $self->fatpack_collect_dirs();
+    my %files;
+    foreach my $dir (@dirs) {
+        $self->fatpack_collect_files($dir, \%files) ;
+    }
+    use Data::Printer; my @a = keys %files; p @dirs;
+    return join "\n", $shebang, $self->fatpack_code(\%files), $script_code;
 }
 
 sub fatpack_collect_dirs {
     my ($self) = @_;
-    return grep -d, map { rel2abs $_, cwd } ($self->{fatlib_dir}, $self->{proj_dir});
+    return grep -d, map {
+            rel2abs $_, $self->{core_obj}->{base}
+        } ($self->{core_obj}->{fatlib_dir}, @{$self->{core_obj}->{proj_dir}});
 }
 
-sub lines_of {
-    map +(chomp,$_)[1], do { local @ARGV = ($_[0]); <> };
-}
-
-sub module_notation_conv {
-    # Conversion of double-coloned module notation (with :: as separator) to
-    # platform-dependent file representation.
-    # Direction:
-    #   1 - filename >> dotted
-    #   0 - dotted >> filename
-    # Note: subroutine currently supports only Unix-like systems
-    my ($namestring, %args) = @_;
-    my $direction = 1;
-    if (exists $args{direction}) {
-        if ($args{direction} eq 'to_dotted' or
-            $args{direction} eq 'to_fname'      )
-        {
-            $direction = $args{direction} eq 'to_dotted' ? 1 : 0;
+sub fatpack_collect_files {
+    my ($self, $dir, $files) = @_;
+ 
+    my $absolute_dir = rel2abs $dir, $self->{core_obj}->{base};
+    # When $dir is not an archlib,
+    # and we are about to search $dir/archlib, skip it!
+    # because $dir/archlib itself will be searched another time.
+    my $skip_dir = catdir($absolute_dir, $Config{archname});
+    $skip_dir = qr/\Q$skip_dir\E/;
+ 
+    my $find = sub {
+        return unless -f $_;
+        for my $ignore (@$IGNORE_FILE) {
+            if ($_ =~ $ignore) {
+                return;
+            }
         }
-        else
-        {
+        my $original = $_;
+        my $absolute = rel2abs $original, $self->{core_obj}->{base};
+        return if $absolute =~ $skip_dir;
+        my $relative = File::Spec::Unix->abs2rel($absolute, $absolute_dir);
+        if (not $_ =~ /\.(?:pm|ix|al|pl)$/) {
+            $self->warning("skip non perl module file $relative");
             return;
         }
-    }
-    my $base = (exists $args{base} and not $args{base} eq "")
-        ? $args{base}
-        : $INC[0];
-
-    my %separators = (  MSWin32 => '\\',
-                        Unix    => '/'  );
-    my $path_separator = $separators{$^O} || $separators{Unix};
-
-    if ($direction) {
-        my $mod_path = $namestring;
-        if (index $namestring, $path_separator) {
-            $mod_path = abs2rel $namestring, $base;
-        }
-        my @mod_path_parts = splitdir $mod_path;
-        if ($mod_path_parts[0] eq '..') {
-            shift @mod_path_parts;
-        }
-        $mod_path_parts[-1] =~ s/(.*)\.pm$/$1/;
-        return join '::', @mod_path_parts;
-    } else {
-        my @mod_name_parts = split '::', $namestring;
-        my $mod_path = join($path_separator, @mod_name_parts) . ".pm";
-        if (exists $args{absolute} and $args{absolute}) {
-            $mod_path = "${base}${path_separator}${mod_path}";
-        }
-        return $mod_path;
-    }
+        $files->{$relative} = $self->fatpack_load_file($absolute, $relative, $original);
+    };
+    find({wanted => $find, no_chdir => 1}, $dir);
 }
 
-sub in_ary {
-    my ($el, $array) = @_;
-    return (grep { $_ eq $el } @$array) ? 1 : 0;
+sub fatpack_load_file {
+    my ($self, $file) = @_;
+    my $content = do {
+        local (@ARGV, $/) = ($file);
+        <>;
+    };
+    close ARGV;
+    return $content;
 }
 
-sub exclude_ary {
-    my ($main, $exclude) = @_;
-    my %exclude_hash = map { $_ => 1 } @$exclude;
-    return (grep { not $exclude_hash{$_} } @$main);
+sub fatpack_load_main_script {
+    my ($self, $file) = @_;
+    open my $fh, "<", $file or die "Cannot open '$file': $!\n";
+    my @lines = <$fh>;
+    my @shebang;
+    if (@lines && index($lines[0], '#!') == 0) {
+        while (1) {
+            push @shebang, shift @lines;
+            last if $shebang[-1] =~ m{^\#\!.*perl};
+        }
+    }
+    return ((join "", @shebang), (join "", @lines));
+}
+
+sub fatpack_start {
+    return stripspace <<'    END_START';
+        # This chunk of stuff was generated by App::FatPacker. To find the original
+        # file's code, look for the end of this BEGIN block or the string 'FATPACK'
+        BEGIN {
+            my %fatpacked;
+    END_START
+}
+ 
+sub fatpack_end {
+    return stripspace <<'    END_END';
+        s/^  //mg for values %fatpacked;
+    
+        my $class = 'FatPacked::'.(0+\%fatpacked);
+        no strict 'refs';
+        *{"${class}::files"} = sub { keys %{$_[0]} };
+    
+        if ($] < 5.008) {
+            *{"${class}::INC"} = sub {
+                if (my $fat = $_[0]{$_[1]}) {
+                    my $pos = 0;
+                    my $last = length $fat;
+                    return (sub {
+                            return 0 if $pos == $last;
+                            my $next = (1 + index $fat, "\n", $pos) || $last;
+                            $_ .= substr $fat, $pos, $next - $pos;
+                            $pos = $next;
+                            return 1;
+                        });
+                }
+            };
+        }
+    
+        else {
+            *{"${class}::INC"} = sub {
+                if (my $fat = $_[0]{$_[1]}) {
+                    open my $fh, '<', \$fat
+                        or die "FatPacker error loading $_[1] (could be a perl installation issue?)";
+                    return $fh;
+                }
+                return;
+            };
+        }
+    
+        unshift @INC, bless \%fatpacked, $class;
+    } # END OF FATPACK CODE
+    END_END
+}
+ 
+sub fatpack_code {
+    my ($self, $files) = @_;
+    my @segments = map {
+            (my $stub = $_) =~ s/\.pm$//;
+            my $name = uc join '_', split '/', $stub;
+            my $data = $files->{$_};
+            $data =~ s/^/  /mg;
+            $data =~ s/(?<!\n)\z/\n/;
+            '$fatpacked{'
+                . perlstring($_)
+                . qq!} = '#line '.(1+__LINE__).' "'.__FILE__."\\"\\n".<<'${name}';\n!
+                . qq!${data}${name}\n!;
+        } sort keys %$files;
+    
+    return join "\n", $self->fatpack_start, @segments, $self->fatpack_end;
 }
 
 sub run {
     my ($self) = @_;
-    my @non_core_deps = (
-        $self->trace_noncore_dependencies(to_packlist => 1),
-        @{$self->{non_CORE}}
-    );
-    $self->add_forced_core_dependenceies(\@non_core_deps);
-    my @non_proj_deps = $self->filter_non_proj_modules(\@non_core_deps);
-    @{$self->{xsed_deps}} = $self->filter_xs_modules(\@non_proj_deps);
+
+    $self->{core_obj}
+    # Tracing non-core dependencies of packing module and adding non-core
+    # dependencies supplied from command line
+            ->trace_noncore_dependencies(to_packlist => 1)
+            ->filter_noncore_dependencies()
+    # Adding to the list of non-core dependencies core modules which must be
+    # included in list of modules for packing
+            ->add_forced_core_dependencies()
+    # Filter non-project module dependencies
+            ->filter_non_proj_modules()
+    # Filter all xs modules
+            ->filter_xs_modules();
+
+
+
 
     $self->{logger}->info("--- non-core-deps");
-    $self->{logger}->info($_) for (@non_core_deps);
+    $self->{logger}->notice($_) for (@{$self->{core_obj}->{_non_core_deps}});
     $self->{logger}->info("--- non-proj-deps");
-    $self->{logger}->info($_) for (@non_proj_deps);
+    $self->{logger}->notice($_) for (@{$self->{core_obj}->{_non_proj_or_cached}->{non_proj}});
+    $self->{logger}->info("--- cached-deps");
+    $self->{logger}->notice($_) for (@{$self->{core_obj}->{_non_proj_or_cached}->{cached}});
     $self->{logger}->info("--- xsed-deps");
-    $self->{logger}->debug($_) for (@{$self->{xsed_deps}});
+    $self->{logger}->notice($_) for (@{$self->{core_obj}->{_xsed}});
 
-    # $self->add_noncore_dependenceies
-    my @packlists = $self->packlist(\@non_proj_deps);
+    # Getting packlists for all non-project dependencies
+    my @packlists = $self->packlist($self->{core_obj}->{_non_proj_or_cached}->{non_proj});
 
     $self->{logger}->info("--- packlists");
-    $self->{logger}->info($_) for (@packlists);
+    $self->{logger}->notice($_) for (@packlists);
 
-    make_path $self->{fatlib_dir};
+    make_path $self->{core_obj}->{fatlib_dir};
 
-    $self->{logger}->info("Fatlib directory: $self->{fatlib_dir}");
+    $self->{logger}->info("Fatlib directory: $self->{core_obj}->{fatlib_dir}");
 
-    my $base = $self->{fatlib_dir};
-    $self->packlists_to_tree($base, \@packlists);
+    # All packlists files move to tree into fatlib directory
+    $self->packlists_to_tree($self->{core_obj}->{fatlib_dir}, \@packlists);
+
+    my $fatpacked = $self->fatpack_file();
+    my $out_file = IO::File->new($self->{core_obj}->{output_file}, ">");
+    die "Cannot open '$self->{result_file}': $!\n" unless defined $out_file;
+    print {$out_file} $fatpacked;
+    $out_file->close();
+    
+    my $mode = (stat $self->{core_obj}->{script})[2];
+    chmod $mode, $self->{core_obj}->{output_file};
+    $self->{logger}->notice("Successfully created $self->{core_obj}->{output_file}");
 }
 
 sub build_dir {
@@ -477,14 +544,6 @@ sub build_dir {
     }
     return [ grep -d, @dir ];
 }
-
-# Logging subroutine of App::FatPacker::Script object.
-# Usage:
-#    $obj->log(MSG, [ [ LEVEL ],
-#       [ msgs => ADD_MSG | [ ADD_MSG_1, ADD_MSG_2, ...] | ADD_MSG_ARY_REF ],
-#       [ attrs => ATTR_STR | [ ATTR_STR_1, ATTR_STR_2, ... ] | ATTR_STR_ARY_REF ],
-#       [ tabs => INT ],
-#       [ colored => 0|1 ] ]);
 
 1;
 __END__
