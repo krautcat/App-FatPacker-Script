@@ -45,7 +45,7 @@ sub AUTOLOAD {
     }
     # allow overloads and blessed subrefs; assign ref so overload is only invoked once
     {
-        no strict 'refs';
+        no strict 'refs'; ## no critic
         # *{"${package}::$method"} = Sub::Util::set_subname("${package}::$method", $sub);
         *{"${package}::$method"} = sub {
             my $self = shift;
@@ -72,12 +72,12 @@ sub can {
     }
 
     unless ( defined $sub and do { local $@; eval { $sub = \&$sub; 1 } } ) {
-        return undef;
+        return undef; ## no critic
     }
     # allow overloads and blessed subrefs; assign ref so overload is only invoked once
     {
         require Sub::Util;
-        no strict 'refs';
+        no strict 'refs'; ## no critic
         *{"${package}::$method"} = sub {
             my $self = shift;
             return $filter_obj->$method(@_);
@@ -227,16 +227,16 @@ sub trace_noncore_dependencies {
                 : $_;
         }
         grep {
-            not Module::CoreList->is_core($_, undef, $self->{target_version})
-            or Module::CoreList->is_deprecated($_, $^V->numify())
-            or defined Module::CoreList->removed_from($_);
+            not still_core($_, $self->{target_version});
         }
         sort {
             $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger;
         }
         map {
-            chomp($_);
-            module_notation_conv($_, direction => 'to_dotted', relative => 0);
+            my $module = $_;
+            chomp($module);
+            module_notation_conv($module, direction => 'to_dotted', 
+                                 relative => 0);
         } qx/$^X @opts/;                                            ## no critic
 
     if (wantarray()) {
