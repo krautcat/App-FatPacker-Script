@@ -3,11 +3,42 @@ package App::FatPacker::Script::Utils;
 use strict;
 use warnings;
 use 5.010001;
+use version 0.77;
 
 use File::Spec::Functions qw/abs2rel splitdir/;
 
+use Module::CoreList ();
+
 use Exporter qw/import/;
-our @EXPORT = qw/lines_of module_notation_conv in_ary exclude_ary stripspace/;
+our @EXPORT = qw/
+    still_core module_notation_conv
+    lines_of
+    in_ary exclude_ary
+    stripspace/;
+
+### Module::CoreList utils
+
+sub still_core {
+    my ($module, $ver_since, $ver_until) =  @_[0..2];
+    $ver_since = version->parse($ver_since)->numify();
+    if (not defined $ver_until) {
+        $ver_until = $^V->numify();
+    }
+    if (not Module::CoreList->is_core($module, undef, $ver_since)
+        or Module::CoreList->is_deprecated($module, $ver_until)
+        or (defined Module::CoreList->removed_from($module)
+            and version->parse(Module::CoreList->removed_from($module)) <
+                version->parse($ver_until)    
+            )
+        )
+    {
+        return 0    
+    }
+    else 
+    {
+        return 1
+    }
+}
 
 ### Misc utils
 

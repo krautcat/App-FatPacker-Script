@@ -24,7 +24,7 @@ sub _create_mock_object {
 
     my $mock_class = "Mock::App::FatPacker::Script::Core";
     {
-        no strict 'refs';
+        no strict 'refs'; # no_critic
         *{ "${mock_class}::inc_dirs" } = sub {
             my $self = shift;
             my %params = @_;

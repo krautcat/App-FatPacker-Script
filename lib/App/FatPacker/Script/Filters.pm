@@ -14,9 +14,9 @@ use Storable qw/fd_retrieve store_fd/;
 
 use File::Spec::Functions qw/catfile/;
 
-use Module::CoreList::More;
-
-use App::FatPacker::Script::Utils;
+use App::FatPacker::Script::Utils qw/
+        still_core module_notation_conv
+    /;
 
 sub new {
     my $class = shift;
@@ -44,13 +44,7 @@ sub filter_noncore_dependencies {
 
     $deps = defined $deps ? $deps : $core_obj->{non_CORE_modules};
 
-    my @non_core = grep {
-            not Module::CoreList->is_core($_, undef, 
-                $core_obj->{target_version}->numify())
-            or Module::CoreList->is_deprecated($_,
-                $^V->numify())
-            or defined Module::CoreList->removed_from($_); 
-        } @$deps;
+    my @non_core = grep { not still_core($_, $core_obj->{target_version}) } @$deps;
 
     if (wantarray()) {
         return @non_core;
@@ -151,7 +145,7 @@ sub filter_xs_modules {
                 $self->{_logger}->warn("Failed to load ${module_fname}: $@");
             };
             if ( grep { $module_fname eq $_ } @DynaLoader::dl_modules ) {
-                push @xsed_modules, $module_name;
+                push @xsed_modules, $module;
             }
         }
         $pipe->writer();
