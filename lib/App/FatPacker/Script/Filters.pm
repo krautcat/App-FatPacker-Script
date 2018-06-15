@@ -44,7 +44,9 @@ sub filter_noncore_dependencies {
 
     $deps = defined $deps ? $deps : $core_obj->{non_CORE_modules};
 
-    my @non_core = grep { not still_core($_, $core_obj->{target_version}) } @$deps;
+    my @non_core = grep { 
+            not still_core($_, $core_obj->{target_Perl_version})
+        } @$deps;
 
     if (wantarray()) {
         return @non_core;
