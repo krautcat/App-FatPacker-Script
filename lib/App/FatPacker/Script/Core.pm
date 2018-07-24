@@ -11,8 +11,8 @@ use List::Util qw/uniq/;
 
 use Cwd ();
 use File::Spec::Functions qw/
-    catdir
-    rel2abs
+        catdir
+        rel2abs
     /;
 
 use App::FatPacker::Script::Utils;

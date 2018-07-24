@@ -22,10 +22,10 @@ use File::Find qw/find/;
 use File::Copy qw/copy/;
 use File::Path qw/make_path remove_tree/;
 use File::Spec::Functions qw/
-    catdir catpath catfile
-    splitdir splitpath
-    rel2abs abs2rel
-    file_name_is_absolute
+        catdir catpath catfile
+        splitdir splitpath
+        rel2abs abs2rel
+        file_name_is_absolute
     /;
 
 use Getopt::Long qw/GetOptions/;
