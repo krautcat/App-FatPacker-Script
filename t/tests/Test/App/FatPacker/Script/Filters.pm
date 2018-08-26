@@ -24,7 +24,7 @@ sub _create_mock_object {
 
     my $mock_class = "Mock::App::FatPacker::Script::Core";
     {
-        no strict 'refs'; # no_critic
+        no strict 'refs'; # no critic
         *{ "${mock_class}::inc_dirs" } = sub {
             my $self = shift;
             my %params = @_;
@@ -39,7 +39,7 @@ sub _create_mock_object {
         };
     }
     my $mock_obj = bless {}, $mock_class;
-    $mock_obj->{target_version} = version->parse("v5.10.1");
+    $mock_obj->{target_Perl_version} = version->parse("v5.10.1");
     @{$mock_obj}{@keys_params} = @params{@keys_params};
     
     $test->{_mock_obj} = $mock_obj;

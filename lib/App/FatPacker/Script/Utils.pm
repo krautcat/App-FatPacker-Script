@@ -3,7 +3,10 @@ package App::FatPacker::Script::Utils;
 use strict;
 use warnings;
 use 5.010001;
-use version 0.77;
+use version 0.77 ();
+
+use Carp qw/croak/;
+use Scalar::Util ();
 
 use File::Spec::Functions qw/abs2rel splitdir/;
 
@@ -19,11 +22,31 @@ our @EXPORT = qw/
 ### Module::CoreList utils
 
 sub still_core {
-    my ($module, $ver_since, $ver_until) =  @_[0..2];
-    $ver_since = version->parse($ver_since)->numify();
+    my ($module, $ver_since, $ver_until) = (shift, undef, undef);
+    croak "No module supplied!" unless defined $module;
+
+    # Parameters are keyword arguments.
+    if (scalar(@_) % 2 == 0 and not version::is_strict($_[0])) {
+        my %args =  @_;
+        ($ver_since, $ver_until) = ($args{'version_since'},
+                                    $args{'version_until'});
+    }
+    # Parameters are positional arguments.
+    else {
+        ($ver_since, $ver_until) = @_;
+    }
+
+    if (Scalar::Util::blessed($ver_since) and $ver_since->isa('version')) {
+        $ver_since = $ver_since->numify();
+    } elsif (version::is_strict($ver_since)) {
+        $ver_since = version->parse($ver_since)->numify();
+    } else {
+        $ver_since = version->parse('5.005');
+    }
     if (not defined $ver_until) {
         $ver_until = $^V->numify();
     }
+
     if (not Module::CoreList->is_core($module, undef, $ver_since)
         or Module::CoreList->is_deprecated($module, $ver_until)
         or (defined Module::CoreList->removed_from($module)

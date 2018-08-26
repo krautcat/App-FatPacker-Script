@@ -11,8 +11,8 @@ use List::Util qw/uniq/;
 
 use Cwd ();
 use File::Spec::Functions qw/
-    catdir
-    rel2abs
+        catdir
+        rel2abs
     /;
 
 use App::FatPacker::Script::Utils;
@@ -109,7 +109,7 @@ sub _defaultize {
 
     $self->{forced_CORE_modules} = [];
     $self->{non_CORE_modules} = [];
-    $self->{target_version} = $^V->numify();
+    $self->{target_Perl_version} = $^V;
 
     $self->{strict} = 0;
     $self->{custom_shebang} = undef;
@@ -125,7 +125,7 @@ sub _initialize {
             ['use_cache', 'use_cache'],
             ['forced_CORE_modules', 'modules', 'forced_CORE'],
             ['non_CORE_modules', 'modules', 'non_CORE'],
-            ['target_version', 'target_Perl_version'],
+            ['target_Perl_version', 'target_Perl_version'],
             ['strict', 'strict'],
             ['custom_shebang', 'custom_shebang'],
             ['perl_strip', 'perl_strip'],
@@ -227,7 +227,7 @@ sub trace_noncore_dependencies {
                 : $_;
         }
         grep {
-            not still_core($_, $self->{target_version});
+            not still_core($_, $self->{target_Perl_version});
         }
         sort {
             $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger;
@@ -256,7 +256,8 @@ sub add_forced_core_dependencies {
 
     # Check whether added
     foreach my $forced_core (@{$self->{forced_CORE_modules}}) {
-        if (Module::CoreList->is_core($forced_core, undef, $self->{target_version})) {
+        if (Module::CoreList->is_core($forced_core, undef,
+                                      $self->{target_Perl_version}->numify())) {
             push @$noncore, $forced_core;
         }
     }
