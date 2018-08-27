@@ -31,7 +31,7 @@ sub parsing_verbosity : Tests(1) {
     $test->_parse_args(
             "-q", "-q", "-q", "-v", 
             "--no-perl-strip");
-    
+
     is(
         $test->{app_obj}->{verboseness},
         -2, 

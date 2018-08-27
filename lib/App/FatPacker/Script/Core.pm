@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.010001;
 
-use Carp ();
+use Carp qw/croak carp/;
 use Log::Any ();
 
 use List::Util qw/uniq/; 
@@ -25,7 +25,7 @@ sub AUTOLOAD {
         && (!ref $inv or Scalar::Util::blessed $inv)
         && $inv->isa(__PACKAGE__) )
     {
-        Carp::croak "Undefined subroutine &${package}::$method called"
+        croak "Undefined subroutine &${package}::$method called"
     }
     return if $method eq 'DESTROY';
 
@@ -40,7 +40,7 @@ sub AUTOLOAD {
         }
     }
     unless ( defined $sub and do { local $@; eval { $sub = \&$sub; 1 } } ) {
-        Carp::croak qq[Can't locate object method "$method"] .
+        croak qq[Can't locate object method "$method"] .
                     qq[via package "$package"]
     }
     # allow overloads and blessed subrefs; assign ref so overload is only invoked once
@@ -93,7 +93,11 @@ sub new {
     my $self = bless {}, $class;
 
     $self->_defaultize();
-    $self->_initialize(%params);    
+    eval {
+        $self->_initialize(%params);
+    } or do {
+        $self
+    }
 
     return $self;
 }
@@ -163,11 +167,13 @@ sub _initialize {
             : $self->{$dir_pair->[0]};
     }
 
-    $self->{script} = $params{script} || Carp::croak("Missing script");
+    $self->{script} = $params{script} || croak("Missing script");
 
     $self->{_logger} = Log::Any->get_logger();
 
-    $self->{_filters} = [ App::FatPacker::Script::Filters->new(core_obj => $self) ];
+    $self->{_filters} = [
+        App::FatPacker::Script::Filters->new(core_obj => $self)
+    ];
 
     $self->{_non_core_deps} = [];
     $self->{_non_proj_or_cached} = {};

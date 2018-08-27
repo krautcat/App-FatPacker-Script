@@ -6,14 +6,14 @@ use 5.010001;
 
 use Scalar::Util ();
 
-use Carp (); 
+use Carp qw/croak/; 
 use Log::Any ();
 
 use IO::Pipe;
 use Storable qw/fd_retrieve store_fd/;
 
 use File::Spec::Functions qw/catfile/;
-
+:
 use App::FatPacker::Script::Utils qw/
         still_core module_notation_conv
     /;
@@ -32,7 +32,7 @@ sub _initialize {
     my $self = shift;
     my %params = @_;
 
-    $self->{core_obj} = $params{core_obj} || Carp::croak("Missing core object");
+    $self->{core_obj} = $params{core_obj} || croak("Missing core object");
     Scalar::Util::weaken($self->{core_obj});
 
     $self->{_logger} = Log::Any->get_logger();
