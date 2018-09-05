@@ -4,20 +4,47 @@ use strict;
 use warnings;
 use 5.010001;
 
-use Scalar::Util ();
-
-use Carp qw/croak/; 
-use Log::Any ();
-
+use File::Spec::Functions qw/catfile/;
 use IO::Pipe;
+use Log::Any ();
+use Scalar::Util ();
 use Storable qw/fd_retrieve store_fd/;
 
-use File::Spec::Functions qw/catfile/;
-:
-use App::FatPacker::Script::Utils qw/
-        still_core module_notation_conv
-    /;
+use App::FatPacker::Script::Utils qw/still_core module_notation_conv/;
 
+=head1 SYNOPSIS
+
+Class wit basic filters containing filter methods used in application by
+default.
+
+=head1 OBJECT INTERFACE
+
+=head2 Attributes
+
+=head2 Methods
+
+=head3 new(%arguments)
+
+Create new instance of C<App::FatPacker::Script::Filters> object. Constructor
+accepts its arguments as flat hash with fat-comma separated key-value 
+parameters separated with comma separator.
+
+B<Arguments>
+
+=over 4
+
+=item C<%arguments>
+
+=over 8
+
+=item C<core_obj>:
+Reference to L<C<App::FatPacker::Script::Core>> instance.
+
+=back
+
+=back
+
+=cut
 sub new {
     my $class = shift;
     my %params = @_;
@@ -38,6 +65,11 @@ sub _initialize {
     $self->{_logger} = Log::Any->get_logger();
 }
 
+=head3 filter_noncore_dependencies($deps)
+
+
+
+=cut
 sub filter_noncore_dependencies {
     my ($self, $deps) = @_;
     my $core_obj = $self->{core_obj};
@@ -82,11 +114,19 @@ sub filter_non_proj_modules {
         for my $non_core (@$modules) {
             my $mod_fname = module_notation_conv($non_core,
                 direction => 'to_fname');
-            eval {
-                require $mod_fname; 
-                1;
-            } or do {
-                $self->{_logger}->warn("Cannot load $non_core module: $@");
+            
+            my ($err_flag, $exception);
+            {
+                local $@;
+                unless (eval { require $mod_fname; 1; }) {
+                    $err_flag = 1;
+                    $exception = $@;
+                }
+            }
+            if ($err_flag) {
+                $self->{_logger}->warn(
+                    "Cannot load $non_core module: $exception"
+                );
                 next;
             };
             # If use-cache options was set, we consider fatlib directory as part

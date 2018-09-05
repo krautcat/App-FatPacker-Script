@@ -4,29 +4,50 @@ use strict;
 use warnings;
 use 5.010001;
 
-use Carp qw/croak carp/;
-use Log::Any ();
-
-use List::Util qw/uniq/; 
-
 use Cwd ();
-use File::Spec::Functions qw/
-        catdir
-        rel2abs
-    /;
+use File::Spec::Functions qw/catdir rel2abs/;
+use List::Util qw/uniq/; 
+use Log::Any ();
 
 use App::FatPacker::Script::Utils;
 use App::FatPacker::Script::Filters ();
 
+=head1 SYNOPSIS
+
+C<App::FatPacker::Script::Core> module is an object-oriented top-level module.
+It contains main information about fatpacking, references to filter methods
+who are resolved dynamically. All filters must be loaded with
+C<L</load_filters>> method before invocation. All filters must began with
+C<filter_> prefix.
+
+=head1 OBJECT INTERFACE
+
+=head2 Attributes
+
+=head3 
+
+=cut
+
 sub AUTOLOAD {
     my ($inv) = @_;
     my ($package, $method) = our $AUTOLOAD =~ /^(.+)::(.+)$/;
-    unless ( defined $inv
-        && (!ref $inv or Scalar::Util::blessed $inv)
-        && $inv->isa(__PACKAGE__) )
+    my ($err_flag, $exception);
+
     {
-        croak "Undefined subroutine &${package}::$method called"
+        local $@;
+        $err_flag = undef;
+        unless ( defined $inv
+            && (!ref $inv or Scalar::Util::blessed $inv)
+            && $inv->isa(__PACKAGE__) )
+        {
+            $err_flag = 1;
+            $exception = $@;
+        }
     }
+    if ($err_flag) {
+        die "Undefined subroutine &${package}::$method called";
+    }
+
     return if $method eq 'DESTROY';
 
     my $sub = undef;
@@ -39,10 +60,21 @@ sub AUTOLOAD {
             }
         }
     }
-    unless ( defined $sub and do { local $@; eval { $sub = \&$sub; 1 } } ) {
-        croak qq[Can't locate object method "$method"] .
-                    qq[via package "$package"]
+
+    {
+        local $@;
+        $err_flag = undef;
+        unless ( defined $sub and eval { $sub = \&$sub; 1 } ) {
+            $err_flag = 1;
+            $exception = $@;
+        }
     }
+    if ($err_flag) {
+        die qq/Can't locate object method "$method"/ .
+            qq/via package "$package"/
+        
+    }
+
     # allow overloads and blessed subrefs; assign ref so overload is only invoked once
     {
         no strict 'refs'; ## no critic
@@ -87,23 +119,122 @@ sub can {
     return $result_sub;
 }
 
+=head2 Methods
+
+=head3 new(%arguments)
+
+Create new instance of C<App::FatPacker::Script::Core> object. Constructor
+accepts its arguments as flat hash with fat-comma separated values
+with comma separator.
+
+    App::FatPacker::Script::Core->new(
+        use_cache => 1,
+        modules => {
+            non_CORE => \@list_of_non_core_modules,
+            forced_CORE => \@list_of_forced_core_modules
+        }
+    )
+
+B<Arguments>
+
+=over 4
+
+=item C<%arguments>:
+fat-comma separated hash-like arguments.
+
+=over 8
+
+=item C<script>:
+Input script executable which fatpacked version is creating.
+
+=item C<output>:
+Output fatpacked file.
+
+=item C<module_dirs>:
+Additional direcotries containing non-project Perl modules.
+
+=item C<proj_dirs>:
+Project directories containing Perl modules.
+
+=item C<fatlib_dir>:
+Directory in which scripts will be temporary copied during fatpacking.
+
+=item C<use_cache>:
+Bool-like value enables or disables using cache of previous fatpacking
+runnings.
+
+=item C<modules>:
+Hash containing info about modules.
+
+=over 12
+
+=item C<forced_CORE>:
+Modules from standard library to include into fatpacked script.
+
+=item C<non_CORE>:
+Both non-project and not from standard library modules to include into fatpacked
+script.
+
+=back
+
+=item C<target_Perl_version>:
+Target Perl version relative to which process of determination whether module
+is in standard library or not will be going.
+
+=item C<strict>:
+
+=item C<custom_shebang>:
+Custom shebang at the beginning of fatpacked script.
+
+=item C<perl_strip>:
+
+=item C<exclude_strip>:
+
+=back
+
+=back
+
+B<Return value>
+
+New instance of C<App::FatPacker::Script::Core> object.
+
+B<Raises>
+
+=cut
 sub new {
     my $class = shift;
     my %params = @_;
     my $self = bless {}, $class;
 
+    my ($err_flag, $exception);
+
     $self->_defaultize();
-    eval {
-        $self->_initialize(%params);
-    } or do {
-        $self
+    {
+        local $@;
+        $err_flag = undef;
+        unless (eval { $self->_initialize(%params); 1; }) {
+            $err_flag = 1;
+            $exception = $@;
+        }
+    }
+    if ($err_flag) {
+        die "Unknown parameters!";
     }
 
     return $self;
 }
 
+=head3 _defaultize()
+
+Internal method.
+
+Set all object atributes to default values.
+
+=cut
 sub _defaultize {
     my $self = shift;
+    
+    $self->{script} = undef;
     $self->{output_file} = rel2abs("fatpacked.pl");
 
     $self->{dir} = [];
@@ -121,53 +252,49 @@ sub _defaultize {
     $self->{exclude_strip} = [];
 }
 
+=head3 _initialize(%arguments)
+
+Internal method.
+
+Initialize object with parameters passed to C<L<new|/"new(%arguments)">> method.
+
+B<Arguments>
+
+Same as for C<L<new|/"new(%arguments)">> method.
+
+=cut
 sub _initialize {
     my $self = shift;
     my %params = @_;
 
-    foreach my $pair (
-            ['use_cache', 'use_cache'],
-            ['forced_CORE_modules', 'modules', 'forced_CORE'],
-            ['non_CORE_modules', 'modules', 'non_CORE'],
-            ['target_Perl_version', 'target_Perl_version'],
-            ['strict', 'strict'],
-            ['custom_shebang', 'custom_shebang'],
-            ['perl_strip', 'perl_strip'],
-            ['exclude_strip', 'exclude_strip']
-        )
-    {
-        if (scalar(@{$pair}) == 2) {
-            $self->{$pair->[0]} = exists $params{$pair->[1]}
-                ? $params{$pair->[1]} : $self->{$pair->[0]};
-        }
-        elsif (scalar(@{$pair}) == 3) {
-            $self->{$pair->[0]} = exists $params{$pair->[1]}{$pair->[2]}
-                ? $params{$pair->[1]}{$pair->[2]} : $self->{$pair->[0]};
-        }
-    }
-
-    $self->{dir} = exists $params{module_dirs}
-        ? [ map { rel2abs($_) } @{$params{module_dirs}} ]
-        : $self->{dir};
-
-    # Concatenate 'lib' to path if and only if directory isn't absolute
-    $self->{proj_dir} = exists $params{proj_dirs}
-        ? [ map {
-                    rel2abs($_) eq $_ ? $_ : catdir(rel2abs($_), "lib")
-                } @{$params{proj_dirs}} ]
-        : $self->{proj_dir}; 
-
-    foreach my $dir_pair (
-            ['output_file', 'output'],
-            ['fatlib_dir', 'fatlib_dir'],
-        )
-    {
-        $self->{$dir_pair->[0]} = exists $params{$dir_pair->[1]}
-            ? rel2abs($params{$dir_pair->[1]})
-            : $self->{$dir_pair->[0]};
-    }
-
     $self->{script} = $params{script} || croak("Missing script");
+    $self->{output_file} = rel2abs($params{output}) if exists $params{output};
+
+    $self->{dir} = [ map { rel2abs($_) } @{$params{module_dirs}} ]
+        if exists $params{module_dirs};
+    
+    # Concatenate 'lib' to path if and only if directory isn't absolute
+    $self->{proj_dir} = [ map {
+            rel2abs($_) eq $_ ? $_ : catdir(rel2abs($_), "lib")
+        } @{$params{proj_dirs}} ] if exists $params{proj_dirs};
+
+    $self->{fatlib_dir} = rel2abs($params{fatlib_dir}) 
+        if exists $params{fatlb_dir};   
+    $self->{use_cache} = $params{use_cache} if exists $params{use_cache};
+
+    $self->{forced_CORE_modules} = $params{modules}{forced_CORE}
+        if exists $params{modules}{forced_CORE};
+    $self->{non_CORE_modules} = $params{modules}{non_CORE}
+        if exists $params{modules}{non_CORE};
+    $self->{target_Perl_version} = $params{target_Perl_version}
+        if exists $params{target_Perl_version};
+
+    $self->{strict} = $params{strict} if exists $params{strict}; 
+    $self->{custom_shebang} = $params{custom_shebang}
+        if exists $params{custom_shebang};
+    $self->{perl_strip} = $params{perl_strip} if exists $params{perl_strip}
+    $self->{exclude_strip} = $params{exclude_strip}
+        if exists $params{exclude_strip}
 
     $self->{_logger} = Log::Any->get_logger();
 
@@ -180,15 +307,42 @@ sub _initialize {
     $self->{_xsed} = [];
 }
 
+=head3 load_filters(@filter_classes)
+
+Dynamically load filter module, create filter object and push it in array of
+avaliable filters.
+
+B<Arguments>
+
+=over 4
+
+=item C<@filter_classes>:
+List of filter classes.
+
+=back
+
+=cut
 sub load_filters {
     my ($self, @filter_classes) = @_;
 
+    my ($err_flag, $exception);
     for my $f (@filter_classes) {
         $f = module_notation_conv($f, direction => 'to_fname');
-        eval {
-            require $f;
-            push @{$self->{_filters}}, $f->new(core_obj => $self);
-        } or do {
+
+        {
+            local $@;
+            ($err_flag, $exception) = (undef, undef)
+            unless (eval {
+                require $f;
+                push @{$self->{_filters}}, $f->new(core_obj => $self);
+                1;
+            }) 
+            {
+                $err_flag = 1;
+                $exception = $@;
+            }
+        }
+        if ($err_flag) {
             $self->{_logger}->error("Can't load filter module $f");
         }
     }
@@ -196,6 +350,36 @@ sub load_filters {
     @{$self->{_filters}} = uniq @{$self->{_filters}};
 }
 
+=head3 inc_dirs(%arguments)
+
+Return list of directories where modules can be looked up. Includes in ascending order C<@INC>
+array, directories from C<dir> attribute, directories from C<fatlib_dir> attribute
+(if C<use_cache> attribute is set to logical I<True>) and C<proj_dir> attribute,
+if C<proj_dir> parameter passed to method is logical I<True>.
+
+B<Arguments>
+
+=over 4
+
+=item C<%arguments>:
+Hash-like fat-comma separated list of comma separated arguments.
+
+=over 8
+
+=item C<proj_dir>:
+Bool-like value. When set to logical I<True>, project directories will be
+included in returning list of dirs, otherwise, when set to logical I<False>,
+project directories will be discarded in return list of directories.
+
+=back
+
+=back
+
+B<Return value>
+
+List of directories for looking up Perl modules.
+
+=cut
 sub inc_dirs {
     my $self = shift;
     my %params = @_;

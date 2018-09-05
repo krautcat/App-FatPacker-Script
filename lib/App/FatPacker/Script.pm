@@ -31,13 +31,13 @@ use File::Spec::Functions qw/
 use Getopt::Long qw/GetOptions/;
 use Pod::Usage qw/pod2usage/;
 
+use App::FatPacker;
+use B qw/perlstring/;
 use Log::Any;
 use Log::Any::Adapter;
-
-use Perl::Strip;
-use B qw/perlstring/;
 use Module::CoreList;
-use App::FatPacker;
+use Perl::Strip;
+
 use App::FatPacker::Script::Core;
 use App::FatPacker::Script::Utils;
 
