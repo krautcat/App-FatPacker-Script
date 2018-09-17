@@ -208,94 +208,47 @@ sub new {
 
     my ($err_flag, $exception);
 
-    $self->_defaultize();
-    {
-        local $@;
-        $err_flag = undef;
-        unless (eval { $self->_initialize(%params); 1; }) {
-            $err_flag = 1;
-            $exception = $@;
-        }
-    }
-    if ($err_flag) {
-        die "Unknown parameters!";
-    }
-
-    return $self;
-}
-
-=head3 _defaultize()
-
-Internal method.
-
-Set all object atributes to default values.
-
-=cut
-sub _defaultize {
-    my $self = shift;
     
-    $self->{script} = undef;
-    $self->{output_file} = rel2abs("fatpacked.pl");
+    $self->{script} = delete $params{script} || croak("Missing script");
+    $self->{output_file} = (
+        defined( my $ouput_file = delete $params{output} )
+        ? rel2abs($ouput_file)
+        : rel2abs("fatpacked.pl")
+    );
 
-    $self->{dir} = [];
-    $self->{proj_dir} = [];
-    $self->{fatlib_dir} = rel2abs("fatlib");
-    $self->{use_cache} = 0;
-
-    $self->{forced_CORE_modules} = [];
-    $self->{non_CORE_modules} = [];
-    $self->{target_Perl_version} = $^V;
-
-    $self->{strict} = 0;
-    $self->{custom_shebang} = undef;
-    $self->{perl_strip} = undef;
-    $self->{exclude_strip} = [];
-}
-
-=head3 _initialize(%arguments)
-
-Internal method.
-
-Initialize object with parameters passed to C<L<new|/"new(%arguments)">> method.
-
-B<Arguments>
-
-Same as for C<L<new|/"new(%arguments)">> method.
-
-=cut
-sub _initialize {
-    my $self = shift;
-    my %params = @_;
-
-    $self->{script} = $params{script} || croak("Missing script");
-    $self->{output_file} = rel2abs($params{output}) if exists $params{output};
-
-    $self->{dir} = [ map { rel2abs($_) } @{$params{module_dirs}} ]
-        if exists $params{module_dirs};
-    
+    $self->{dir} = (
+        defined( my $module_dirs = delete $params{module_dirs} )
+        ? [ map { rel2abs($_) } @$module_dirs ]
+        : []
+    );
     # Concatenate 'lib' to path if and only if directory isn't absolute
-    $self->{proj_dir} = [ map {
-            rel2abs($_) eq $_ ? $_ : catdir(rel2abs($_), "lib")
-        } @{$params{proj_dirs}} ] if exists $params{proj_dirs};
+    $self->{proj_dir} = (
+        defined( my $proj_dirs = delete $params{proj_dirs} )
+        ? [
+            map { rel2abs($_) eq $_ ? $_ : catdir( rel2abs($_), "lib" ) }
+              @$proj_dirs
+          ]
+        : []
+    );
 
-    $self->{fatlib_dir} = rel2abs($params{fatlib_dir}) 
-        if exists $params{fatlb_dir};   
-    $self->{use_cache} = $params{use_cache} if exists $params{use_cache};
+    $self->{fatlib_dir} = (
+        defined( my $fatlib_dir = delete $params{fatlib_dir} )
+        ? rel2abs($fatlib_dir) 
+        : rel2abs("fatlib")
+    );
+    $self->{use_cache} = delete $params{use_cache} // 0;
 
-    $self->{forced_CORE_modules} = $params{modules}{forced_CORE}
-        if exists $params{modules}{forced_CORE};
-    $self->{non_CORE_modules} = $params{modules}{non_CORE}
-        if exists $params{modules}{non_CORE};
-    $self->{target_Perl_version} = $params{target_Perl_version}
-        if exists $params{target_Perl_version};
+    $self->{forced_CORE_modules} = delete $params{modules}{forced_CORE} // [];
+    $self->{non_CORE_modules} = delete $params{modules}{non_CORE} // [];
+    $self->{target_Perl_version} = delete $params{target_Perl_version} // $^V;
 
-    $self->{strict} = $params{strict} if exists $params{strict}; 
-    $self->{custom_shebang} = $params{custom_shebang}
-        if exists $params{custom_shebang};
-    $self->{perl_strip} = $params{perl_strip} if exists $params{perl_strip}
-    $self->{exclude_strip} = $params{exclude_strip}
-        if exists $params{exclude_strip}
+    $self->{strict} = delete $params{strict} // 0;
+    $self->{custom_shebang} = delete $params{custom_shebang} // undef;
+    $self->{perl_strip} = delete $params{perl_strip} // undef;
+    $self->{exclude_strip} = delete $params{exclude_strip} // [];
 
+        
+    
     $self->{_logger} = Log::Any->get_logger();
 
     $self->{_filters} = [
@@ -305,6 +258,8 @@ sub _initialize {
     $self->{_non_core_deps} = [];
     $self->{_non_proj_or_cached} = {};
     $self->{_xsed} = [];
+
+    return $self;
 }
 
 =head3 load_filters(@filter_classes)
