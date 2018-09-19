@@ -3,6 +3,7 @@ package App::FatPacker::Script;
 use strict;
 use warnings;
 use 5.010001;
+use version;
 
 use Data::Printer;
 
@@ -41,7 +42,7 @@ use Perl::Strip;
 use App::FatPacker::Script::Core;
 use App::FatPacker::Script::Utils;
 
-our $VERSION = '0.01';
+our $VERSION = "0.000001";
 
 our $IGNORE_FILE = [
     qr/\.pod$/,

@@ -133,7 +133,7 @@ sub colored {
 
 # Used from Log::Any::Adapter::File
 foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
-    no strict 'refs';
+    no strict 'refs';   ## no critic
     my $method_level = Log::Any::Adapter::Util::numeric_level($method);
     *{$method} = sub {
         my ($self, $text) = @_;
@@ -145,7 +145,7 @@ foreach my $method ( Log::Any::Adapter::Util::logging_methods() ) {
 }
 
 foreach my $method ( Log::Any::Adapter::Util::detection_methods() ) {
-    no strict 'refs';
+    no strict 'refs';   ## no critic
     my $base = substr($method,3);
     my $method_level = Log::Any::Adapter::Util::numeric_level( $base );
     *{$method} = sub {

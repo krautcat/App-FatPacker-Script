@@ -6,7 +6,7 @@ use 5.010001;
 
 use Cwd ();
 use File::Spec::Functions qw/catdir rel2abs/;
-use List::Util qw/uniq/; 
+use List::Util qw/uniq/;
 use Log::Any ();
 
 use App::FatPacker::Script::Utils;
@@ -30,17 +30,17 @@ C<filter_> prefix.
 
 sub AUTOLOAD {
     my ($inv) = @_;
-    my ($package, $method) = our $AUTOLOAD =~ /^(.+)::(.+)$/;
-    my ($err_flag, $exception);
+    my ( $package, $method ) = our $AUTOLOAD =~ /^(.+)::(.+)$/;
+    my ( $err_flag, $exception );
 
     {
         local $@;
         $err_flag = undef;
         unless ( defined $inv
-            && (!ref $inv or Scalar::Util::blessed $inv)
+            && ( !ref $inv or Scalar::Util::blessed $inv)
             && $inv->isa(__PACKAGE__) )
         {
-            $err_flag = 1;
+            $err_flag  = 1;
             $exception = $@;
         }
     }
@@ -50,12 +50,12 @@ sub AUTOLOAD {
 
     return if $method eq 'DESTROY';
 
-    my $sub = undef;
+    my $sub        = undef;
     my $filter_obj = undef;
-    if ($method =~ m/^filter_(.+)*/) {
-        for my $f (@{$inv->{_filters}}) {
-            if ($f->can($method)) {
-                $sub = $f->can($method);
+    if ( $method =~ m/^filter_(.+)*/ ) {
+        for my $f ( @{ $inv->{_filters} } ) {
+            if ( $f->can($method) ) {
+                $sub        = $f->can($method);
                 $filter_obj = $f;
             }
         }
@@ -65,55 +65,62 @@ sub AUTOLOAD {
         local $@;
         $err_flag = undef;
         unless ( defined $sub and eval { $sub = \&$sub; 1 } ) {
-            $err_flag = 1;
+            $err_flag  = 1;
             $exception = $@;
         }
     }
     if ($err_flag) {
-        die qq/Can't locate object method "$method"/ .
-            qq/via package "$package"/
-        
+        die qq/Can't locate object method "$method"/
+          . qq/via package "$package"/
+
     }
 
-    # allow overloads and blessed subrefs; assign ref so overload is only invoked once
+# allow overloads and blessed subrefs; assign ref so overload is only invoked once
     {
-        no strict 'refs'; ## no critic
-        # *{"${package}::$method"} = Sub::Util::set_subname("${package}::$method", $sub);
+        no strict 'refs';    ## no critic
+         # *{"${package}::$method"} = Sub::Util::set_subname("${package}::$method", $sub);
         *{"${package}::$method"} = sub {
             my $self = shift;
             return $filter_obj->$method(@_);
-        }
+          }
     }
     my $result_sub = "${package}::$method";
     goto &$result_sub;
 }
 
 sub can {
-    my ($package, $method) = @_;
+    my ( $package, $method ) = @_;
     my $sub = $package->SUPER::can($method);
     return $sub if defined $sub;
 
     my $filter_obj = undef;
-    if ($method =~ m/^filter_(.+)$/) {
-        for my $f (@{$package->{_filters}}) {
-            if ($f->can($method)) {
-                $sub = $f->can($method);
+    if ( $method =~ m/^filter_(.+)$/ ) {
+        for my $f ( @{ $package->{_filters} } ) {
+            if ( $f->can($method) ) {
+                $sub        = $f->can($method);
                 $filter_obj = $f;
             }
         }
     }
 
-    unless ( defined $sub and do { local $@; eval { $sub = \&$sub; 1 } } ) {
-        return undef; ## no critic
+    unless (
+        defined $sub and do {
+            local $@;
+            eval { $sub = \&$sub; 1 };
+        }
+      )
+    {
+        return undef;    ## no critic
     }
-    # allow overloads and blessed subrefs; assign ref so overload is only invoked once
+
+# allow overloads and blessed subrefs; assign ref so overload is only invoked once
     {
         require Sub::Util;
-        no strict 'refs'; ## no critic
+        no strict 'refs';    ## no critic
         *{"${package}::$method"} = sub {
             my $self = shift;
             return $filter_obj->$method(@_);
-        }
+          }
     }
     my $result_sub = "${package}::$method";
     return $result_sub;
@@ -201,18 +208,18 @@ New instance of C<App::FatPacker::Script::Core> object.
 B<Raises>
 
 =cut
+
 sub new {
-    my $class = shift;
+    my $class  = shift;
     my %params = @_;
-    my $self = bless {}, $class;
+    my $self   = bless {}, $class;
 
-    my ($err_flag, $exception);
+    my ( $err_flag, $exception );
 
-    
     $self->{script} = delete $params{script} || croak("Missing script");
     $self->{output_file} = (
-        defined( my $ouput_file = delete $params{output} )
-        ? rel2abs($ouput_file)
+        defined( $self->{output_file} = delete $params{output} )
+        ? rel2abs( $self->{output_file} )
         : rel2abs("fatpacked.pl")
     );
 
@@ -221,6 +228,7 @@ sub new {
         ? [ map { rel2abs($_) } @$module_dirs ]
         : []
     );
+
     # Concatenate 'lib' to path if and only if directory isn't absolute
     $self->{proj_dir} = (
         defined( my $proj_dirs = delete $params{proj_dirs} )
@@ -233,31 +241,28 @@ sub new {
 
     $self->{fatlib_dir} = (
         defined( my $fatlib_dir = delete $params{fatlib_dir} )
-        ? rel2abs($fatlib_dir) 
+        ? rel2abs($fatlib_dir)
         : rel2abs("fatlib")
     );
     $self->{use_cache} = delete $params{use_cache} // 0;
 
     $self->{forced_CORE_modules} = delete $params{modules}{forced_CORE} // [];
-    $self->{non_CORE_modules} = delete $params{modules}{non_CORE} // [];
-    $self->{target_Perl_version} = delete $params{target_Perl_version} // $^V;
+    $self->{non_CORE_modules}    = delete $params{modules}{non_CORE}    // [];
+    $self->{target_Perl_version} = delete $params{target_Perl_version}  // $^V;
 
-    $self->{strict} = delete $params{strict} // 0;
+    $self->{strict}         = delete $params{strict}         // 0;
     $self->{custom_shebang} = delete $params{custom_shebang} // undef;
-    $self->{perl_strip} = delete $params{perl_strip} // undef;
-    $self->{exclude_strip} = delete $params{exclude_strip} // [];
+    $self->{perl_strip}     = delete $params{perl_strip}     // undef;
+    $self->{exclude_strip}  = delete $params{exclude_strip}  // [];
 
-        
-    
     $self->{_logger} = Log::Any->get_logger();
 
-    $self->{_filters} = [
-        App::FatPacker::Script::Filters->new(core_obj => $self)
-    ];
+    $self->{_filters} =
+      [ App::FatPacker::Script::Filters->new( core_obj => $self ) ];
 
-    $self->{_non_core_deps} = [];
+    $self->{_non_core_deps}      = [];
     $self->{_non_proj_or_cached} = {};
-    $self->{_xsed} = [];
+    $self->{_xsed}               = [];
 
     return $self;
 }
@@ -277,23 +282,26 @@ List of filter classes.
 =back
 
 =cut
-sub load_filters {
-    my ($self, @filter_classes) = @_;
 
-    my ($err_flag, $exception);
+sub load_filters {
+    my ( $self, @filter_classes ) = @_;
+
+    my ( $err_flag, $exception );
     for my $f (@filter_classes) {
-        $f = module_notation_conv($f, direction => 'to_fname');
+        $f = module_notation_conv( $f, direction => 'to_fname' );
 
         {
             local $@;
-            ($err_flag, $exception) = (undef, undef)
-            unless (eval {
-                require $f;
-                push @{$self->{_filters}}, $f->new(core_obj => $self);
-                1;
-            }) 
+            ( $err_flag, $exception ) = ( undef, undef )
+              unless (
+                eval {
+                    require $f;
+                    push @{ $self->{_filters} }, $f->new( core_obj => $self );
+                    1;
+                }
+              )
             {
-                $err_flag = 1;
+                $err_flag  = 1;
                 $exception = $@;
             }
         }
@@ -302,7 +310,7 @@ sub load_filters {
         }
     }
 
-    @{$self->{_filters}} = uniq @{$self->{_filters}};
+    @{ $self->{_filters} } = uniq @{ $self->{_filters} };
 }
 
 =head3 inc_dirs(%arguments)
@@ -335,82 +343,85 @@ B<Return value>
 List of directories for looking up Perl modules.
 
 =cut
+
 sub inc_dirs {
-    my $self = shift;
+    my $self   = shift;
     my %params = @_;
     $params{proj_dir} = exists $params{proj_dir} ? $params{proj_dir} : 1;
 
-    return uniq (
-        ( $params{proj_dir} ? @{$self->{proj_dir}} : () ),
-        ( $self->{use_cache} ? $self->{fatlib_dir} : () ),
-        @{$self->{dir}}, 
-        @INC
+    return uniq(
+        ( $params{proj_dir}  ? @{ $self->{proj_dir} } : () ),
+        ( $self->{use_cache} ? $self->{fatlib_dir}    : () ),
+        @{ $self->{dir} }, @INC
     );
 }
 
 sub trace_noncore_dependencies {
-    my ($self, %args) = @_;
+    my $self = shift;
+    my %args = @_;
 
-    my @opts = ($self->{script});
-    if ($self->{quiet}) {
+    my @opts = ( $self->{script} );
+    if ( $self->{quiet} ) {
         push @opts, '2>/dev/null';
     }
     my $trace_opts = '>&STDOUT';
 
     local $ENV{PERL5OPT} = join ' ',
-        ( $ENV{PERL5OPT} || () ), '-MApp::FatPacker::Trace=' . $trace_opts;
-    local $ENV{PERL5LIB} = join ':',
-        @{$self->{proj_dir}},
-        ( $self->{use_cache} ? $self->{fatlib_dir} : () ),
-        @{$self->{dir}},
-        ( $ENV{PERL5LIB} || () );
+      ( $ENV{PERL5OPT} || () ), '-MApp::FatPacker::Trace=' . $trace_opts;
+    local $ENV{PERL5LIB} = join ':', @{ $self->{proj_dir} },
+      ( $self->{use_cache} ? $self->{fatlib_dir} : () ), @{ $self->{dir} },
+      ( $ENV{PERL5LIB} || () );
 
     my @non_core =
-        map { 
-            $args{to_packlist}
-                ? module_notation_conv($_, direction => 'to_fname')
-                : $_;
-        }
-        grep {
-            not still_core($_, $self->{target_Perl_version});
-        }
-        sort {
-            $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger;
-        }
-        map {
-            my $module = $_;
-            chomp($module);
-            module_notation_conv($module, direction => 'to_dotted', 
-                                 relative => 0);
-        } qx/$^X @opts/;                                            ## no critic
+      map {
+        $args{to_packlist}
+          ? module_notation_conv( $_, direction => 'to_fname' )
+          : $_;
+      }
+      grep { not still_core( $_, $self->{target_Perl_version} ); }
+      sort { $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger; }
+      map {
+        my $module = $_;
+        chomp($module);
+        module_notation_conv(
+            $module,
+            direction => 'to_dotted',
+            relative  => 0
+        );
+      } qx/$^X @opts/;    ## no critic
 
-    if (wantarray()) {
+    if ( wantarray() ) {
         return @non_core;
-    } else {
+    }
+    else {
         $self->{_non_core_deps} = \@non_core;
         return $self;
     }
 }
 
 sub add_forced_core_dependencies {
-    my ($self, $noncore) = @_;
+    my ( $self, $noncore ) = @_;
 
-    if (not defined $noncore) {
+    if ( not defined $noncore ) {
         $noncore = $self->{_non_core_deps};
     }
 
     # Check whether added
-    foreach my $forced_core (@{$self->{forced_CORE_modules}}) {
-        if (Module::CoreList->is_core($forced_core, undef,
-                                      $self->{target_Perl_version}->numify())) {
+    foreach my $forced_core ( @{ $self->{forced_CORE_modules} } ) {
+        if (
+            Module::CoreList->is_core(
+                $forced_core, undef, $self->{target_Perl_version}->numify()
+            )
+          )
+        {
             push @$noncore, $forced_core;
         }
     }
-    if (wantarray()) {
-        return (sort {
-                $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger
-            } @$noncore);
-    } else {
+    if ( wantarray() ) {
+        return ( sort { $a =~ s!(\w+)!lc($1)!ger cmp $b =~ s!(\w+)!lc($1)!ger }
+              @$noncore );
+    }
+    else {
         return $self;
     }
 }
