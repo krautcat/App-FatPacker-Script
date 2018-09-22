@@ -10,13 +10,10 @@ use Scalar::Util ();
 
 use File::Spec::Functions qw/abs2rel splitdir/;
 
-use Module::CoreList ();
+use Module::CoreList 2.99 ();
 
 use Exporter qw/import/;
-our @EXPORT = qw/
-    still_core module_notation_conv
-    lines_of
-    in_ary exclude_ary
+our @EXPORT = qw/still_core module_notation_conv lines_of in_ary exclude_ary
     stripspace/;
 
 ### Module::CoreList utils
@@ -44,14 +41,14 @@ sub still_core {
         $ver_since = version->parse('5.005');
     }
     if (not defined $ver_until) {
-        $ver_until = $^V->numify();
+        $ver_until = version->parse($^V);
     }
 
-    if (not Module::CoreList->is_core($module, undef, $ver_since)
-        or Module::CoreList->is_deprecated($module, $ver_until)
+    if (not Module::CoreList->is_core($module, undef, $ver_since->numify())
+        or Module::CoreList->is_deprecated($module, $ver_until->numify())
         or (defined Module::CoreList->removed_from($module)
             and version->parse(Module::CoreList->removed_from($module)) <
-                version->parse($ver_until)    
+                $ver_until    
             )
         )
     {
@@ -137,3 +134,4 @@ sub exclude_ary {
     my %exclude_hash = map { $_ => 1 } @$exclude;
     return (grep { not $exclude_hash{$_} } @$main);
 }
+

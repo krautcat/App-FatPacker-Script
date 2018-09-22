@@ -292,7 +292,7 @@ sub load_filters {
 
         {
             local $@;
-            ( $err_flag, $exception ) = ( undef, undef );
+            ( $err_flag, $exception ) = ( undef, undef )
               unless (
                 eval {
                     require $f;
