@@ -38,14 +38,14 @@ sub still_core {
     } elsif (version::is_strict($ver_since)) {
         $ver_since = version->parse($ver_since)->numify();
     } else {
-        $ver_since = version->parse('5.005');
+        $ver_since = version->parse('5.005')->numify();
     }
     if (not defined $ver_until) {
-        $ver_until = version->parse($^V);
+        $ver_until = version->parse($^V)->numify();
     }
 
-    if (not Module::CoreList->is_core($module, undef, $ver_since->numify())
-        or Module::CoreList->is_deprecated($module, $ver_until->numify())
+    if (not Module::CoreList->is_core($module, undef, $ver_since)
+        or Module::CoreList->is_deprecated($module, $ver_until)
         or (defined Module::CoreList->removed_from($module)
             and version->parse(Module::CoreList->removed_from($module)) <
                 $ver_until    
