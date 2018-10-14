@@ -1,8 +1,9 @@
-package App::FatPacker::Script::Filters;
+package App::FatPacker::Script::Plugin::Filter::Core;
 
 use strict;
 use warnings;
 use 5.010001;
+use parent 'App::FatPacker::Script::Plugin::Filter::Base';
 
 use File::Spec::Functions qw/catfile/;
 use IO::Pipe;
@@ -48,21 +49,10 @@ Reference to L<C<App::FatPacker::Script::Core>> instance.
 sub new {
     my $class = shift;
     my %params = @_;
-    my $self = bless {}, $class;
 
-    $self->_initialize(%params);
+    my $self = $class->SUPER::new(%params);
 
     return $self;
-}
-
-sub _initialize {
-    my $self = shift;
-    my %params = @_;
-
-    $self->{core_obj} = $params{core_obj} || croak("Missing core object");
-    Scalar::Util::weaken($self->{core_obj});
-
-    $self->{_logger} = Log::Any->get_logger();
 }
 
 =head3 filter_noncore_dependencies($deps)

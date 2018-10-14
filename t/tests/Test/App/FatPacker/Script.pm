@@ -19,7 +19,7 @@ sub startup : Tests(startup => 1) {
 sub constructor : Tests(3) {
     my $test  = shift;
     my $class = $test->class;
-    can_ok $class, 'new';
+    can_ok($class, 'new');
     
     my $app_obj;
     local @ARGV;

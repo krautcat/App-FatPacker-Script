@@ -11,10 +11,10 @@ use Test::More;
 use Test::Deep;
 use base 'Test::Class';
 
-use App::FatPacker::Script::Filters;
+use App::FatPacker::Script::Plugin::Filter::Core;
 
 sub class {
-    'App::FatPacker::Script::Filters';
+    'App::FatPacker::Script::Plugin::Filter::Core';
 }
 
 sub _create_mock_object {

@@ -1,4 +1,4 @@
-package Test::App::FatPacker::Script::Parsing;
+    package Test::App::FatPacker::Script::Parsing;
 
 use strict;
 use warnings;

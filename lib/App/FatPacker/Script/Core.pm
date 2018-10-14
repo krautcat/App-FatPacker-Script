@@ -9,8 +9,8 @@ use File::Spec::Functions qw/catdir rel2abs/;
 use List::Util qw/uniq/;
 use Log::Any ();
 
+use App::FatPacker::Script::Plugin;
 use App::FatPacker::Script::Utils;
-use App::FatPacker::Script::Filters ();
 
 =head1 SYNOPSIS
 
@@ -31,6 +31,7 @@ C<filter_> prefix.
 sub AUTOLOAD {
     my ($inv) = @_;
     my ( $package, $method ) = our $AUTOLOAD =~ /^(.+)::(.+)$/;
+
     my ( $err_flag, $exception );
 
     {
@@ -45,15 +46,18 @@ sub AUTOLOAD {
         }
     }
     if ($err_flag) {
+
+        # TODO: die with object
         die "Undefined subroutine &${package}::$method called";
     }
 
+    # Special case
     return if $method eq 'DESTROY';
 
     my $sub        = undef;
     my $filter_obj = undef;
     if ( $method =~ m/^filter_(.+)*/ ) {
-        for my $f ( @{ $inv->{_filters} } ) {
+        for my $f ( @{ $inv->{plguins} } ) {
             if ( $f->can($method) ) {
                 $sub        = $f->can($method);
                 $filter_obj = $f;
@@ -70,22 +74,17 @@ sub AUTOLOAD {
         }
     }
     if ($err_flag) {
+
+        # TODO: die with object
         die qq/Can't locate object method "$method"/
           . qq/via package "$package"/;
 
     }
 
-# allow overloads and blessed subrefs; assign ref so overload is only invoked once
-    {
-        no strict 'refs';    ## no critic
-         # *{"${package}::$method"} = Sub::Util::set_subname("${package}::$method", $sub);
-        *{"${package}::$method"} = sub {
-            my $self = shift;
-            return $filter_obj->$method(@_);
-          }
-    }
-    my $result_sub = "${package}::$method";
-    goto &$result_sub;
+    # Change first argument to true object for which we call method and then
+    # goto this method.
+    $_[0] = $filter_obj;
+    goto &$sub;
 }
 
 sub can {
@@ -95,7 +94,7 @@ sub can {
 
     my $filter_obj = undef;
     if ( $method =~ m/^filter_(.+)$/ ) {
-        for my $f ( @{ $package->{_filters} } ) {
+        for my $f ( @{ $package->{plugins} } ) {
             if ( $f->can($method) ) {
                 $sub        = $f->can($method);
                 $filter_obj = $f;
@@ -113,17 +112,7 @@ sub can {
         return undef;    ## no critic
     }
 
-# allow overloads and blessed subrefs; assign ref so overload is only invoked once
-    {
-        require Sub::Util;
-        no strict 'refs';    ## no critic
-        *{"${package}::$method"} = sub {
-            my $self = shift;
-            return $filter_obj->$method(@_);
-          }
-    }
-    my $result_sub = "${package}::$method";
-    return $result_sub;
+    return \$filter_obj->$method;
 }
 
 =head2 Methods
@@ -247,18 +236,20 @@ sub new {
     $self->{use_cache} = delete $params{use_cache} // 0;
 
     $self->{forced_CORE_modules} = delete $params{modules}{forced_CORE} // [];
-    $self->{non_CORE_modules}    = delete $params{modules}{non_CORE} //    [];
-    $self->{target_Perl_version} = delete $params{target_Perl_version} // $^V;
+    $self->{non_CORE_modules}    = delete $params{modules}{non_CORE}    // [];
+    $self->{target_Perl_version} = delete $params{target_Perl_version}  // $^V;
 
-    $self->{strict}         = delete $params{strict} // 0;
+    $self->{strict}         = delete $params{strict}         // 0;
     $self->{custom_shebang} = delete $params{custom_shebang} // undef;
-    $self->{perl_strip}     = delete $params{perl_strip} // undef;
-    $self->{exclude_strip}  = delete $params{exclude_strip} // [];
+    $self->{perl_strip}     = delete $params{perl_strip}     // undef;
+    $self->{exclude_strip}  = delete $params{exclude_strip}  // [];
 
     $self->{_logger} = Log::Any->get_logger();
 
-    $self->{_filters} =
-      [ App::FatPacker::Script::Filters->new( core_obj => $self ) ];
+    $self->{_plugin_loader} = App::FatPacker::Script::Plugin->new();
+    $self->{plugins} =
+      $self->{_plugin_loader}->load_plugins( "App::FatPacker::Script::Filters",
+        options => { core_obj => $self } );
 
     $self->{_non_core_deps}      = [];
     $self->{_non_proj_or_cached} = {};
@@ -293,7 +284,7 @@ sub load_filters {
         {
             local $@;
             ( $err_flag, $exception ) = ( undef, undef );
-              unless (
+            unless (
                 eval {
                     require $f;
                     push @{ $self->{_filters} }, $f->new( core_obj => $self );

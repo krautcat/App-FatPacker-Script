@@ -23,12 +23,12 @@ sub has_default_filter : Tests(3) {
     my $test_obj = $class->new(script => "t/data/bin/stub.pl");
     
     is(
-        scalar(@{$test_obj->{_filters}}),
+        scalar(@{$test_obj->{plugins}}),
         1,
         "By deault there will be one filter"
     );
     isa_ok(
-        ${$test_obj->{_filters}}[0],
+        ${$test_obj->{plugins}}[0],
         'App::FatPacker::Script::Filters',
         "Core object must contain one filter object"
     );
@@ -43,14 +43,14 @@ sub add_existing_filter : Tests(2) {
     my $class = $test->class();
     my $test_obj = $class->new(script => "t/data/bin/stub.pl");
 
-    $test_obj->load_filters("App::FatPacker::Script::Filters");
+    $test_obj->{_plugin_loader}->load_plugins("App::FatPacker::Script::Filters");
     is(
-        scalar(@{$test_obj->{_filters}}),
+        scalar(@{$test_obj->{plugins}}),
         1,
         "Number of filters must be the same"
     );
     isa_ok(
-        ${$test_obj->{_filters}}[0],
+        ${$test_obj->{plugins}}[0],
         'App::FatPacker::Script::Filters',
         "Class of filter object must still the same"
     );
