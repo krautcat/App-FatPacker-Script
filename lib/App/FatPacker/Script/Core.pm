@@ -248,7 +248,7 @@ sub new {
 
     $self->{_plugin_loader} = App::FatPacker::Script::Plugin->new();
     $self->{plugins} =
-      $self->{_plugin_loader}->load_plugins( "App::FatPacker::Script::Filters",
+      $self->{_plugin_loader}->load_plugins( "App::FatPacker::Script::Plugin::Filter::Core",
         options => { core_obj => $self } );
 
     $self->{_non_core_deps}      = [];

@@ -8,7 +8,7 @@ sub new {
     my %params = @_;
     my $self = bless {}, $class;
 
-    $self->{core_obj} = $params{core_obj} || croak("Missing core object");
+    $self->{core_obj} = $params{core_obj} || die "Missing core object";
     Scalar::Util::weaken($self->{core_obj});
 
     $self->{_logger} = Log::Any->get_logger();

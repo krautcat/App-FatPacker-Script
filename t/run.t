@@ -9,5 +9,6 @@ use Test::App::FatPacker::Script;
 use Test::App::FatPacker::Script::Parsing;
 use Test::App::FatPacker::Script::Core;
 use Test::App::FatPacker::Script::Filters;
+use Test::App::FatPacker::Script::Plugin;
 
 Test::Class->runtests;
